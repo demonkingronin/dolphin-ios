@@ -34,6 +34,21 @@ jobs:
           submodules: recursive
 
       # Xcode 26+ is required for the project's AppIcon_Glass.icon Icon Composer asset.
+      - name: Apply Xcode 26 compatibility fix for bundled fmt
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          header = Path("Externals/fmt/fmt/include/fmt/chrono.h")
+          original = header.read_text()
+          old = 'FMT_STRING("{:.{}f}")'
+          new = 'fmt::runtime("{:.{}f}")'
+          if original.count(old) != 1:
+              raise SystemExit("Unexpected fmt version: expected one format call")
+          header.write_text(original.replace(old, new, 1))
+          print("Patched bundled fmt chrono dynamic-precision formatting for Xcode 26")
+          PY
+
       - name: Check Xcode toolchain
         run: |
           xcode-select -p
