@@ -4,6 +4,8 @@
 #import "EmulationiOSViewController.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <algorithm>
+#include <cmath>
 
 #import "Common/IOFile.h"
 
@@ -531,6 +533,15 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 
   UIMenu* visibleControllerMenu = [UIMenu menuWithTitle:@"Touch Controller" image:[UIImage systemImageNamed:@"gamecontroller"] identifier:nil options:0 children:visibleControllerActions];
   [controllerActions addObject:visibleControllerMenu];
+  // Connected devices and full mapping remain accessible without exiting the game.
+  [controllerActions addObject:[self inputDeviceMenuForGameCube:YES]];
+  if (Core::System::GetInstance().IsWii())
+    [controllerActions addObject:[self inputDeviceMenuForGameCube:NO]];
+  [controllerActions addObject:[UIAction actionWithTitle:@"Configure Controllers…"
+                                                    image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+                                               identifier:nil handler:^(__unused UIAction* action) {
+    [self openInGameControllerEditor];
+  }]];
   [controllerActions addObject:[UIAction actionWithTitle:@"Configure Controllers…"
       image:[UIImage systemImageNamed:@"gamecontroller"] identifier:nil
       handler:^(__unused UIAction* action) {
@@ -591,6 +602,10 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
   [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Controllers") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:controllerActions]];
   [menuItems addObject:[self liveGraphicsMenu]];
   [menuItems addObject:[self liveGameSettingsMenu]];
+  [menuItems addObject:[UIMenu menuWithTitle:@"Live Settings" image:nil identifier:nil
+                            options:UIMenuOptionsDisplayInline children:@[
+    [self liveGraphicsMenu], [self liveGameOptionsMenu]
+  ]]];
   [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Save State") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
     [UIMenu menuWithTitle:DOLCoreLocalizedString(@"Select State Slot") image:nil identifier:nil options:0 children:stateSlotActions],
     [UIAction actionWithTitle:DOLCoreLocalizedString(@"Load State") image:[UIImage systemImageNamed:@"tray.and.arrow.down"] identifier:nil handler:^(UIAction*) {
