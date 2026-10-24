@@ -40,6 +40,9 @@
   bool _didStartEmulation;
   bool _safeBootSettingsApplied;
   std::map<Config::Location, std::optional<std::string>> _previousSafeBootSettings;
+  NSString* _gameUsagePath;
+  NSTimer* _gameUsageTimer;
+  NSTimeInterval _unsavedPlaySeconds;
 }
 
 - (void)viewDidLoad {
@@ -203,12 +206,55 @@
 }
 
 - (void)dealloc {
+  [_gameUsageTimer invalidate];
+  [self savePendingGamePlaytime];
   // Also covers closing the test screen without ever starting emulation.
   [self restoreSafeBootSettings];
 }
 
 - (void)startEmulation {
+  // Track only launched games, never Wii System Menu or GameCube IPL.
+  if (self.bootParameter.bootType == EmulationBootTypeFile) {
+    _gameUsagePath = self.bootParameter.usageGamePath ?: self.bootParameter.path;
+    [self updateGameUsageWithSeconds:0 markLaunch:YES];
+    _gameUsageTimer = [NSTimer timerWithTimeInterval:1 target:self
+                                           selector:@selector(gameUsageTick:)
+                                           userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:_gameUsageTimer forMode:NSRunLoopCommonModes];
+  }
   [[EmulationCoordinator shared] runEmulationWithBootParameter:self.bootParameter];
+}
+
+// Count running gameplay time, excluding emulation pauses and startup waiting.
+// Persist periodically to avoid losing the entire session on an app interruption.
+- (void)gameUsageTick:(__unused NSTimer*)timer {
+  if (Core::GetState(Core::System::GetInstance()) != Core::State::Running ||
+      [EmulationCoordinator shared].userRequestedPause)
+    return;
+  _unsavedPlaySeconds += 1.0;
+  if (_unsavedPlaySeconds >= 10.0)
+    [self savePendingGamePlaytime];
+}
+
+- (void)savePendingGamePlaytime {
+  if (_unsavedPlaySeconds <= 0)
+    return;
+  NSTimeInterval seconds = _unsavedPlaySeconds;
+  _unsavedPlaySeconds = 0;
+  [self updateGameUsageWithSeconds:seconds markLaunch:NO];
+}
+
+- (void)updateGameUsageWithSeconds:(NSTimeInterval)seconds markLaunch:(BOOL)markLaunch {
+  if (_gameUsagePath.length == 0)
+    return;
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSMutableDictionary* usage = [[defaults dictionaryForKey:@"DOLGameUsageStatisticsV1"] mutableCopy] ?: [NSMutableDictionary dictionary];
+  NSMutableDictionary* game = [usage[_gameUsagePath] mutableCopy] ?: [NSMutableDictionary dictionary];
+  if (markLaunch)
+    game[@"lastPlayed"] = @([[NSDate date] timeIntervalSince1970]);
+  game[@"timePlayed"] = @([game[@"timePlayed"] doubleValue] + seconds);
+  usage[_gameUsagePath] = game;
+  [defaults setObject:usage forKey:@"DOLGameUsageStatisticsV1"];
 }
 
 // "Found 0 custom textures" comes from Dolphin's HiresTexture::Update.
@@ -520,6 +566,9 @@
 
 - (void)receiveEmulationEndNotification {
   dispatch_async(dispatch_get_main_queue(), ^{
+    [self->_gameUsageTimer invalidate];
+    self->_gameUsageTimer = nil;
+    [self savePendingGamePlaytime];
     [self restoreSafeBootSettings];
     [UIView animateWithDuration:0.25f animations:^{
       self.rendererView.alpha = 0.0f;
