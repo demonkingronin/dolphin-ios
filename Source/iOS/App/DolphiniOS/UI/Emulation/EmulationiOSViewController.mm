@@ -9,6 +9,8 @@
 
 #import "Core/ConfigManager.h"
 #import "Core/Config/iOSSettings.h"
+#import "Core/Config/GraphicsSettings.h"
+#import "VideoCommon/VideoConfig.h"
 #import "Core/Config/MainSettings.h"
 #import "Core/Config/WiimoteSettings.h"
 #import "Core/HW/GCPad.h"
@@ -44,6 +46,7 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 @implementation EmulationiOSViewController {
   DOLEmulationVisibleTouchPad _visibleTouchPad;
   int _stateSlot;
+  BOOL _controllerEditorWasPaused;
 }
 
 - (void)viewDidLoad {
@@ -95,6 +98,174 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
   [[NSNotificationCenter defaultCenter] removeObserver:self name:DOLHostTitleChangedNotification object:nil];
   [[NSNotificationCenter defaultCenter] removeObserver:self name:DOLHostRequestRenderWindowSizeNotification object:nil];
   [[NSNotificationCenter defaultCenter] removeObserver:self name:DOLEmulationDidEndNotification object:nil];
+}
+
+
+#pragma mark - In-game controller configuration
+
+// Present the existing Dolphin controller screens above the current game.
+// The emulation session stays loaded. Temporarily pause to avoid button presses
+// leaking into the game during mapping or input detection.
+- (void)openControllerEditor {
+  UIViewController* root = [[UIStoryboard storyboardWithName:@"ControllersSettings"
+                                                        bundle:nil] instantiateInitialViewController];
+  if (!root)
+    return;
+  _controllerEditorWasPaused = [EmulationCoordinator shared].userRequestedPause;
+  if (!_controllerEditorWasPaused)
+    [self pausePressed];
+
+  UINavigationController* navigation = [[UINavigationController alloc]
+      initWithRootViewController:root];
+  root.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                          target:self action:@selector(closeControllerEditor)];
+  navigation.modalPresentationStyle = UIModalPresentationPageSheet;
+  navigation.modalInPresentation = YES; // Done restores the prior pause state.
+  [self presentViewController:navigation animated:YES completion:nil];
+}
+
+- (void)closeControllerEditor {
+  [self dismissViewControllerAnimated:YES completion:^{
+    if (!self->_controllerEditorWasPaused &&
+        Core::IsRunningOrStarting(Core::System::GetInstance()))
+      [self playPressed];
+    if (Core::System::GetInstance().IsWii())
+      [self updateVisibleTouchPadToWii];
+    else
+      [self updateVisibleTouchPadToGameCube];
+    [self recreateMenu];
+  }];
+}
+
+#pragma mark - Live-changeable graphics and emulation settings
+
+- (UIMenu*)liveGraphicsMenu {
+  NSMutableArray<UIMenuElement*>* resolutionActions = [NSMutableArray array];
+  NSInteger selectedScale = Config::Get(Config::GFX_EFB_SCALE);
+  // Existing Dolphin video config responds to EFB scale changes without a reboot.
+  NSInteger maximum = MAX(6, MIN((NSInteger)Config::Get(Config::GFX_MAX_EFB_SCALE),
+                                   MAX(selectedScale, (NSInteger)6)));
+  for (NSInteger scale = 0; scale <= maximum; scale++) {
+    NSString* title = scale == 0 ? @"Auto" :
+        [NSString stringWithFormat:@"%ld× Native", (long)scale];
+    const NSInteger newScale = scale;
+    UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil
+        handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_EFB_SCALE, (int)newScale);
+      [self recreateMenu];
+    }];
+    action.state = scale == selectedScale ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [resolutionActions addObject:action];
+  }
+  UIMenu* resolutionMenu = [UIMenu menuWithTitle:@"Internal Resolution"
+      image:[UIImage systemImageNamed:@"square.dashed.inset.filled"]
+      identifier:nil options:0 children:resolutionActions];
+
+  NSArray<NSString*>* aspectTitles = @[@"Auto", @"Force 16:9", @"Force 4:3",
+                                       @"Stretch to Window"];
+  const AspectMode modes[] = {AspectMode::Auto, AspectMode::ForceWide,
+                               AspectMode::ForceStandard, AspectMode::Stretch};
+  NSMutableArray<UIMenuElement*>* aspectActions = [NSMutableArray array];
+  for (NSUInteger index = 0; index < aspectTitles.count; index++) {
+    const AspectMode value = modes[index];
+    UIAction* action = [UIAction actionWithTitle:aspectTitles[index] image:nil
+        identifier:nil handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_ASPECT_RATIO, value);
+      [self recreateMenu];
+    }];
+    action.state = value == Config::Get(Config::GFX_ASPECT_RATIO) ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [aspectActions addObject:action];
+  }
+  UIMenu* aspectMenu = [UIMenu menuWithTitle:@"Aspect Ratio"
+      image:[UIImage systemImageNamed:@"aspectratio"] identifier:nil
+      options:0 children:aspectActions];
+
+  NSArray<NSString*>* filterTitles = @[@"Default", @"Force Nearest", @"Force Linear"];
+  const TextureFilteringMode filters[] = {TextureFilteringMode::Default,
+      TextureFilteringMode::Nearest, TextureFilteringMode::Linear};
+  NSMutableArray<UIMenuElement*>* filterActions = [NSMutableArray array];
+  for (NSUInteger index = 0; index < filterTitles.count; index++) {
+    const TextureFilteringMode value = filters[index];
+    UIAction* action = [UIAction actionWithTitle:filterTitles[index] image:nil
+        identifier:nil handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_ENHANCE_FORCE_TEXTURE_FILTERING, value);
+      [self recreateMenu];
+    }];
+    action.state = value == Config::Get(Config::GFX_ENHANCE_FORCE_TEXTURE_FILTERING) ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [filterActions addObject:action];
+  }
+  UIMenu* filteringMenu = [UIMenu menuWithTitle:@"Texture Filtering"
+      image:[UIImage systemImageNamed:@"line.3.horizontal.decrease"] identifier:nil
+      options:0 children:filterActions];
+
+  NSArray<NSString*>* anisotropyTitles = @[@"Default", @"1×", @"2×", @"4×", @"8×", @"16×"];
+  const AnisotropicFilteringMode anisotropyValues[] = {
+      AnisotropicFilteringMode::Default, AnisotropicFilteringMode::Force1x,
+      AnisotropicFilteringMode::Force2x, AnisotropicFilteringMode::Force4x,
+      AnisotropicFilteringMode::Force8x, AnisotropicFilteringMode::Force16x};
+  NSMutableArray<UIMenuElement*>* anisotropyActions = [NSMutableArray array];
+  for (NSUInteger index = 0; index < anisotropyTitles.count; index++) {
+    const AnisotropicFilteringMode value = anisotropyValues[index];
+    UIAction* action = [UIAction actionWithTitle:anisotropyTitles[index]
+        image:nil identifier:nil handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_ENHANCE_MAX_ANISOTROPY, value);
+      [self recreateMenu];
+    }];
+    action.state = value == Config::Get(Config::GFX_ENHANCE_MAX_ANISOTROPY) ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [anisotropyActions addObject:action];
+  }
+  UIMenu* anisotropyMenu = [UIMenu menuWithTitle:@"Anisotropic Filtering"
+      image:nil identifier:nil options:0 children:anisotropyActions];
+
+  UIAction* vsyncAction = [UIAction actionWithTitle:@"V-Sync"
+      image:nil identifier:nil handler:^(__unused UIAction* sender) {
+    Config::SetBaseOrCurrent(Config::GFX_VSYNC, !Config::Get(Config::GFX_VSYNC));
+    [self recreateMenu];
+  }];
+  vsyncAction.state = Config::Get(Config::GFX_VSYNC) ?
+      UIMenuElementStateOn : UIMenuElementStateOff;
+
+  UIAction* fpsAction = [UIAction actionWithTitle:@"Show FPS"
+      image:nil identifier:nil handler:^(__unused UIAction* sender) {
+    Config::SetBaseOrCurrent(Config::GFX_SHOW_FPS, !Config::Get(Config::GFX_SHOW_FPS));
+    [self recreateMenu];
+  }];
+  fpsAction.state = Config::Get(Config::GFX_SHOW_FPS) ?
+      UIMenuElementStateOn : UIMenuElementStateOff;
+
+  return [UIMenu menuWithTitle:@"Graphics" image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+      identifier:nil options:UIMenuOptionsDisplayInline
+      children:@[resolutionMenu, aspectMenu, filteringMenu, anisotropyMenu,
+                 vsyncAction, fpsAction]];
+}
+
+- (UIMenu*)liveGameSettingsMenu {
+  NSMutableArray<UIMenuElement*>* speedActions = [NSMutableArray array];
+  const float speeds[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 0.0f};
+  NSArray<NSString*>* names = @[@"50%", @"75%", @"100% (Normal)",
+                                 @"125%", @"150%", @"200%", @"Unlimited"];
+  const float current = Config::Get(Config::MAIN_EMULATION_SPEED);
+  for (NSUInteger index = 0; index < names.count; index++) {
+    float speed = speeds[index];
+    UIAction* action = [UIAction actionWithTitle:names[index] image:nil
+        identifier:nil handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::MAIN_EMULATION_SPEED, speed);
+      [self recreateMenu];
+    }];
+    action.state = fabsf(current - speed) < 0.001f ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [speedActions addObject:action];
+  }
+  UIMenu* speedsMenu = [UIMenu menuWithTitle:@"Emulation Speed"
+      image:[UIImage systemImageNamed:@"speedometer"] identifier:nil
+      options:0 children:speedActions];
+  return [UIMenu menuWithTitle:@"Game Settings"
+      image:[UIImage systemImageNamed:@"gearshape.2"] identifier:nil
+      options:UIMenuOptionsDisplayInline children:@[speedsMenu]];
 }
 
 - (void)recreateMenu {
@@ -160,6 +331,11 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 
   UIMenu* visibleControllerMenu = [UIMenu menuWithTitle:@"Touch Controller" image:[UIImage systemImageNamed:@"gamecontroller"] identifier:nil options:0 children:visibleControllerActions];
   [controllerActions addObject:visibleControllerMenu];
+  [controllerActions addObject:[UIAction actionWithTitle:@"Configure Controllers…"
+      image:[UIImage systemImageNamed:@"gamecontroller"] identifier:nil
+      handler:^(__unused UIAction* action) {
+    [self openControllerEditor];
+  }]];
 
   if (wiimoteTouchPadAttached) {
     TCWiiTouchIRMode irMode = (TCWiiTouchIRMode)Config::Get(Config::MAIN_TOUCH_PAD_IR_MODE);
@@ -213,6 +389,8 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
   
   NSMutableArray<UIMenuElement*>* menuItems = [[NSMutableArray alloc] init];
   [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Controllers") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:controllerActions]];
+  [menuItems addObject:[self liveGraphicsMenu]];
+  [menuItems addObject:[self liveGameSettingsMenu]];
   [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Save State") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
     [UIMenu menuWithTitle:DOLCoreLocalizedString(@"Select State Slot") image:nil identifier:nil options:0 children:stateSlotActions],
     [UIAction actionWithTitle:DOLCoreLocalizedString(@"Load State") image:[UIImage systemImageNamed:@"tray.and.arrow.down"] identifier:nil handler:^(UIAction*) {
