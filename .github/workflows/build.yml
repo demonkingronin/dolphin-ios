@@ -22,8 +22,8 @@ jobs:
       XCODE_DERIVED_DATA: ${{ github.workspace }}/build-Xcode
       ARCHIVE_PATH: ${{ github.workspace }}/archives/NonJailbroken.xcarchive
       # Exact ID published for the original stable OatmealDome NJB IPA.
-      # Bundle identifiers are case-sensitive; do not capitalize dolphinios.
-      TARGET_BUNDLE_ID: me.oatmealdome.dolphinios-njb
+      # Capital D and IOS are required to match the existing yellow LiveContainer guest.
+      TARGET_BUNDLE_ID: me.oatmealdome.DolphiniOS-njb
       DOL_BUILD_SOURCE: development
 
     steps:
@@ -64,7 +64,7 @@ jobs:
           import os
           import re
           bundle_id = os.environ.get("TARGET_BUNDLE_ID", "")
-          if bundle_id != "me.oatmealdome.dolphinios-njb":
+          if bundle_id != "me.oatmealdome.DolphiniOS-njb":
               raise SystemExit("Build refuses to create a different LiveContainer guest.")
           print(f"Original OatmealDome stable bundle ID: {bundle_id}")
           PY
