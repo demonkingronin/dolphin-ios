@@ -891,7 +891,9 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
       continue;
     auto descriptor =
         DiscIO::ParseGameModDescriptorFile(candidate.gameFile->GetFilePath());
-    if (descriptor && descriptor->base_file == game.gameFile->GetFilePath()) {
+    if (descriptor &&
+        [self isModDescriptorAtPath:CppToFoundationString(candidate.gameFile->GetFilePath())
+                     pairedWithGame:game]) {
       NSString* path = CppToFoundationString(candidate.gameFile->GetFilePath());
       if (![paths containsObject:path])
         [paths addObject:path];

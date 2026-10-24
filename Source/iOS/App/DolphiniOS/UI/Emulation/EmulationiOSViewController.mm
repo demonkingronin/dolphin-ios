@@ -6,8 +6,12 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 
 #import "Common/IOFile.h"
+#import "Common/FileUtil.h"
+#import "Common/IniFile.h"
 
 #import "Core/ConfigManager.h"
 #import "Core/Config/iOSSettings.h"
@@ -24,6 +28,7 @@
 
 #import "InputCommon/InputConfig.h"
 #import "InputCommon/ControllerEmu/ControllerEmu.h"
+#import "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
 #import "InputCommon/ControllerInterface/ControllerInterface.h"
 
 #import "VideoCommon/Present.h"
@@ -151,8 +156,133 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
   [self finishInGameControllerEditor];
 }
 
-// Use Dolphin's current device list and native iOS submenu checkmarks. Changing
-// the source never automatically overwrites a saved user's controller mappings.
+// Persist separate device-specific snapshots so touchscreen and physical
+// controller bindings survive switching and app restarts. The user-facing
+// profile names in Config/Profiles are never overwritten.
+- (std::string)automaticInputProfileForDevice:(const std::string&)device
+                                   gameCube:(BOOL)isGameCube {
+  uint64_t hash = 14695981039346656037ULL;
+  for (unsigned char character : device) {
+    hash ^= character;
+    hash *= 1099511628211ULL;
+  }
+  char filename[96];
+  std::snprintf(filename, sizeof(filename), "%s-%016llx.ini",
+                isGameCube ? "GCPad" : "Wiimote",
+                static_cast<unsigned long long>(hash));
+  return File::GetUserPath(D_CONFIG_IDX) + "AutoInputProfiles/" + filename;
+}
+
+- (void)showInputSwitchError:(NSString*)message {
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Controller Switch"
+      message:message preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+      style:UIAlertActionStyleDefault handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (BOOL)selectInputDevice:(const std::string&)device gameCube:(BOOL)isGameCube {
+  InputConfig* config = isGameCube ? Pad::GetConfig() : Wiimote::GetConfig();
+  ControllerEmu::EmulatedController* controller = config->GetController(0);
+  if (!controller || device.empty())
+    return NO;
+
+  const std::string oldDevice = controller->GetDefaultDevice().ToString();
+  ciface::Core::DeviceQualifier qualifier;
+  qualifier.FromString(device);
+  const BOOL touchSelected = qualifier.source == "iOS" &&
+      qualifier.name == "Touchscreen";
+  const BOOL physicalSelected = qualifier.source == "MFi";
+
+  // Repair an already-selected touchscreen from the previous broken build:
+  // its default device was changed but its 'Buttons/A' still says 'Button A'
+  // (the MFi name), not the virtual 'Button 0' / 'Button 100' control.
+  BOOL staleTouchMapping = NO;
+  const std::string targetSnapshot = [self automaticInputProfileForDevice:device
+                                                                gameCube:isGameCube];
+  if (touchSelected && oldDevice == device && !File::Exists(targetSnapshot)) {
+    Common::IniFile current;
+    controller->SaveConfig(current.GetOrCreateSection("Profile"));
+    std::string mappedA;
+    current.GetOrCreateSection("Profile")->Get("Buttons/A", &mappedA, "");
+    staleTouchMapping = mappedA.find("Button A") != std::string::npos ||
+                        mappedA.find("MFi/") != std::string::npos;
+  }
+  if (oldDevice != device || staleTouchMapping) {
+    Common::IniFile next;
+    BOOL hasNext = NO;
+    BOOL usingFactoryProfile = NO;
+    if (File::Exists(targetSnapshot)) {
+      if (!next.Load(targetSnapshot)) {
+        [self showInputSwitchError:@"The saved device mapping could not be loaded. No settings were changed."];
+        return NO;
+      }
+      hasNext = YES;
+    } else if (touchSelected || physicalSelected) {
+      const std::string factoryFile = config->GetSysProfileDirectoryPath() +
+          (touchSelected ? "Touchscreen.ini" : "Physical Controller.ini");
+      if (!next.Load(factoryFile)) {
+        [self showInputSwitchError:@"The bundled mapping for this device could not be loaded. No settings were changed."];
+        return NO;
+      }
+      hasNext = YES;
+      usingFactoryProfile = YES;
+    }
+
+    u32 previousExtension = 0;
+    ControllerEmu::Attachments* wiiAttachments = nullptr;
+    if (!isGameCube) {
+      wiiAttachments = static_cast<ControllerEmu::Attachments*>(
+          Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
+      previousExtension = wiiAttachments->GetSelectedAttachment();
+    }
+
+    // Never overwrite a good touchscreen snapshot with the stale MFi map
+    // being repaired. All other outgoing maps get their own durable backup.
+    if (!oldDevice.empty() && !staleTouchMapping) {
+      Common::IniFile outgoing;
+      controller->SaveConfig(outgoing.GetOrCreateSection("Profile"));
+      const std::string backup = [self automaticInputProfileForDevice:oldDevice
+                                                            gameCube:isGameCube];
+      if (!File::CreateFullPath(backup) || !outgoing.Save(backup)) {
+        [self showInputSwitchError:@"The previous controller mapping could not be backed up. No settings were changed."];
+        return NO;
+      }
+    }
+
+    if (hasNext) {
+      controller->LoadDefaults(g_controller_interface);
+      controller->LoadConfig(next.GetOrCreateSection("Profile"));
+      if (usingFactoryProfile && wiiAttachments)
+        wiiAttachments->SetSelectedAttachment(previousExtension);
+    }
+    controller->SetDefaultDevice(device);
+    controller->UpdateReferences(g_controller_interface);
+    config->SaveConfig();
+  }
+
+  // Showing a touchpad must also activate its matching device's input data.
+  if (touchSelected) {
+    if (isGameCube)
+      [self updateVisibleTouchPadToGameCube];
+    else
+      [self updateVisibleTouchPadToWii];
+  } else if ((isGameCube && _visibleTouchPad == DOLEmulationVisibleTouchPadGameCube) ||
+             (!isGameCube && (_visibleTouchPad == DOLEmulationVisibleTouchPadWiimote ||
+                               _visibleTouchPad == DOLEmulationVisibleTouchPadSidewaysWiimote ||
+                               _visibleTouchPad == DOLEmulationVisibleTouchPadClassic))) {
+    [self updateVisibleTouchPadWithType:DOLEmulationVisibleTouchPadNone];
+  }
+  [self recreateMenu];
+  return YES;
+}
+
+- (void)enableTouchControlsForGameCube:(BOOL)isGameCube {
+  const std::string touchscreen = isGameCube ? "iOS/0/Touchscreen" : "iOS/4/Touchscreen";
+  [self selectInputDevice:touchscreen gameCube:isGameCube];
+}
+
+// Select a device together with its stored button/axis mappings.
 - (UIMenu*)inputDeviceMenuForGameCube:(BOOL)isGameCube {
   InputConfig* config = isGameCube ? Pad::GetConfig() : Wiimote::GetConfig();
   ControllerEmu::EmulatedController* controller = config->GetController(0);
@@ -173,10 +303,7 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
         @"Touchscreen" : value;
     UIAction* action = [UIAction actionWithTitle:label image:nil identifier:nil
                                         handler:^(__unused UIAction* sender) {
-      controller->SetDefaultDevice(FoundationToCppString(value));
-      controller->UpdateReferences(g_controller_interface);
-      config->SaveConfig();
-      [self recreateMenu];
+      [self selectInputDevice:FoundationToCppString(value) gameCube:isGameCube];
     }];
     action.state = selected == device ? UIMenuElementStateOn : UIMenuElementStateOff;
     [actions addObject:action];
@@ -326,20 +453,23 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 
   NSMutableArray<UIMenuElement*>* visibleControllerActions = [[NSMutableArray alloc] init];
 
-  bool wiimoteTouchPadAttached = [self isWiimoteTouchPadAttached] && Core::System::GetInstance().IsWii();
-  bool gamecubeTouchPadAttached = [self isGameCubeTouchPadAttached];
+  // Let the user turn on touch controls even if a physical controller is
+  // currently bound. Pressing the item will switch the actual input mapping.
+  bool wiimoteTouchPadAttached = Core::System::GetInstance().IsWii() &&
+      Config::Get(Config::GetInfoForWiimoteSource(0)) == WiimoteSource::Emulated;
+  bool gamecubeTouchPadAttached =
+      Config::Get(Config::GetInfoForSIDevice(0)) != SerialInterface::SIDEVICE_NONE;
 
   if (wiimoteTouchPadAttached) {
     UIAction* wiimoteAction = [UIAction actionWithTitle:DOLCoreLocalizedString(@"Wii Remote") image:nil identifier:nil handler:^(UIAction*) {
-      [self updateVisibleTouchPadToWii];
-      [self recreateMenu];
-
+      [self enableTouchControlsForGameCube:NO];
       [self.navigationController setNavigationBarHidden:true animated:true];
     }];
 
-    if (_visibleTouchPad == DOLEmulationVisibleTouchPadWiimote ||
-        _visibleTouchPad == DOLEmulationVisibleTouchPadSidewaysWiimote ||
-        _visibleTouchPad == DOLEmulationVisibleTouchPadClassic) {
+    if ([self isWiimoteTouchPadAttached] &&
+        (_visibleTouchPad == DOLEmulationVisibleTouchPadWiimote ||
+         _visibleTouchPad == DOLEmulationVisibleTouchPadSidewaysWiimote ||
+         _visibleTouchPad == DOLEmulationVisibleTouchPadClassic)) {
       wiimoteAction.state = UIMenuElementStateOn;
     } else {
       wiimoteAction.state = UIMenuElementStateOff;
@@ -350,13 +480,12 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 
   if (gamecubeTouchPadAttached) {
     UIAction* gamecubeAction = [UIAction actionWithTitle:DOLCoreLocalizedString(@"GameCube Controller") image:nil identifier:nil handler:^(UIAction*) {
-      [self updateVisibleTouchPadToGameCube];
-      [self recreateMenu];
-
+      [self enableTouchControlsForGameCube:YES];
       [self.navigationController setNavigationBarHidden:true animated:true];
     }];
 
-    if (_visibleTouchPad == DOLEmulationVisibleTouchPadGameCube) {
+    if ([self isGameCubeTouchPadAttached] &&
+        _visibleTouchPad == DOLEmulationVisibleTouchPadGameCube) {
       gamecubeAction.state = UIMenuElementStateOn;
     } else {
       gamecubeAction.state = UIMenuElementStateOff;

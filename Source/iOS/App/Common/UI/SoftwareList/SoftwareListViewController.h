@@ -21,6 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reloadGameFiles;
 // Reorder existing game covers without changing any game files.
 - (void)sortGameFiles;
+// Paired mod JSONs are launch profiles, not duplicate disc covers.
+- (BOOL)isModDescriptorAtPath:(NSString*)path pairedWithGame:(GameFilePtrWrapper*)game;
 - (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper;
 - (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper withLaunchProfile:(nullable NSString*)profilePath;
 - (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper withLaunchProfile:(nullable NSString*)profilePath safeBoot:(BOOL)safeBoot;

@@ -83,6 +83,29 @@
   }];
 }
 
+// Resolve path aliases and compare genuine game identity to recognize a
+// paired Dolphin JSON descriptor. Never combine two actual ISO/WBFS game files.
+- (BOOL)isModDescriptorAtPath:(NSString*)path pairedWithGame:(GameFilePtrWrapper*)game {
+  if (path.length == 0 || !game.gameFile)
+    return NO;
+  auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(path));
+  if (!descriptor)
+    return NO;
+  NSString* base = CppToFoundationString(descriptor->base_file);
+  NSString* disc = CppToFoundationString(game.gameFile->GetFilePath());
+  if ([[base stringByStandardizingPath] isEqualToString:[disc stringByStandardizingPath]] ||
+      [[base stringByResolvingSymlinksInPath] isEqualToString:[disc stringByResolvingSymlinksInPath]])
+    return YES;
+  // A valid descriptor has an openable base disc. Match its game identity
+  // even if the JSON stored an alternate pathname for the same game.
+  UICommon::GameFile baseGame(descriptor->base_file);
+  return baseGame.IsValid() &&
+      baseGame.GetGameID() == game.gameFile->GetGameID() &&
+      baseGame.GetPlatform() == game.gameFile->GetPlatform() &&
+      baseGame.GetRevision() == game.gameFile->GetRevision() &&
+      baseGame.GetDiscNumber() == game.gameFile->GetDiscNumber();
+}
+
 // A JSON descriptor with a matching base game is a launch profile, not a
 // separate game. Other formats (including independently patched ISOs) remain.
 - (NSArray<GameFilePtrWrapper*>*)hidePairedJSONDescriptors:
@@ -90,19 +113,17 @@
   NSMutableArray<GameFilePtrWrapper*>* visible = [NSMutableArray array];
   for (GameFilePtrWrapper* item in games) {
     if (item.gameFile->GetBlobType() == DiscIO::BlobType::MOD_DESCRIPTOR) {
-      auto descriptor = DiscIO::ParseGameModDescriptorFile(item.gameFile->GetFilePath());
-      if (descriptor) {
-        BOOL hasBaseGame = NO;
-        for (GameFilePtrWrapper* other in games) {
-          if (other.gameFile->GetBlobType() != DiscIO::BlobType::MOD_DESCRIPTOR &&
-              other.gameFile->GetFilePath() == descriptor->base_file) {
-            hasBaseGame = YES;
-            break;
-          }
+      NSString* path = CppToFoundationString(item.gameFile->GetFilePath());
+      BOOL paired = NO;
+      for (GameFilePtrWrapper* other in games) {
+        if (other.gameFile->GetBlobType() != DiscIO::BlobType::MOD_DESCRIPTOR &&
+            [self isModDescriptorAtPath:path pairedWithGame:other]) {
+          paired = YES;
+          break;
         }
-        if (hasBaseGame)
-          continue;
       }
+      if (paired)
+        continue;
     }
     [visible addObject:item];
   }
@@ -130,7 +151,8 @@
       auto descriptor =
           DiscIO::ParseGameModDescriptorFile(candidate.gameFile->GetFilePath());
       if (!descriptor ||
-          descriptor->base_file != gameFileWrapper.gameFile->GetFilePath() ||
+          ![self isModDescriptorAtPath:CppToFoundationString(candidate.gameFile->GetFilePath())
+                       pairedWithGame:gameFileWrapper] ||
           !descriptor->riivolution || descriptor->riivolution->patches.empty())
         continue;
 
@@ -165,8 +187,9 @@
   std::shared_ptr<const UICommon::GameFile> game = gameFileWrapper.gameFile;
   if (profilePath.length > 0) {
     auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(profilePath));
-    BOOL isValid = descriptor && descriptor->base_file == game->GetFilePath() &&
-                   descriptor->riivolution && !descriptor->riivolution->patches.empty();
+    BOOL isValid = descriptor &&
+        [self isModDescriptorAtPath:profilePath pairedWithGame:gameFileWrapper] &&
+        descriptor->riivolution && !descriptor->riivolution->patches.empty();
     if (isValid) {
       for (const auto& patch : descriptor->riivolution->patches) {
         if (!File::Exists(patch.xml) ||
