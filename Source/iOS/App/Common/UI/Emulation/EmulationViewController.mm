@@ -82,8 +82,10 @@
   [self.view addSubview:textureButton];
 
   [NSLayoutConstraint activateConstraints:@[
-    [diagnosticButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor
-                                                   constant:10],
+    // Center both debug buttons as one group, away from the upper-left
+    // back/exit arrow. Keep the group within the safe area on iPhone.
+    [diagnosticButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor
+                                                   constant:-94],
     [diagnosticButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
                                                constant:8],
     [diagnosticButton.widthAnchor constraintEqualToConstant:90],
