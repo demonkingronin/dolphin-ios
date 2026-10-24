@@ -1,16 +1,13 @@
 name: Build iOS IPA
 
-# Build only when explicitly requested. Avoids repeated expensive rebuilds
-# while preparing a combined test with the user's existing LiveContainer data.
+# Builds an update for the OatmealDome stable non-jailbroken app, not
+# another independently identified installation. Push builds are limited to
+# the development branch; manual rebuilds stay available.
 on:
-  # A replacement IPA must use the exact identifier of the EXISTING installed app.
-  # Avoid building an IPA that silently creates a separate LiveContainer guest.
+  push:
+    branches:
+      - feature/controller-mapping-fix
   workflow_dispatch:
-    inputs:
-      existing_bundle_id:
-        description: "Exact CFBundleIdentifier of existing DolphiniOS installation"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -24,7 +21,9 @@ jobs:
       XCODE_PROJECT: Source/iOS/App/DolphiniOS.xcodeproj
       XCODE_DERIVED_DATA: ${{ github.workspace }}/build-Xcode
       ARCHIVE_PATH: ${{ github.workspace }}/archives/NonJailbroken.xcarchive
-      TARGET_BUNDLE_ID: ${{ inputs.existing_bundle_id }}
+      # Exact ID published for the original stable OatmealDome NJB IPA.
+      # Bundle identifiers are case-sensitive; do not capitalize dolphinios.
+      TARGET_BUNDLE_ID: me.oatmealdome.dolphinios-njb
       DOL_BUILD_SOURCE: development
 
     steps:
@@ -65,9 +64,9 @@ jobs:
           import os
           import re
           bundle_id = os.environ.get("TARGET_BUNDLE_ID", "")
-          if not re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", bundle_id):
-              raise SystemExit("Use the exact CFBundleIdentifier from the existing installation.")
-          print(f"Replacement bundle ID: {bundle_id}")
+          if bundle_id != "me.oatmealdome.dolphinios-njb":
+              raise SystemExit("Build refuses to create a different LiveContainer guest.")
+          print(f"Original OatmealDome stable bundle ID: {bundle_id}")
           PY
 
       - name: Build non-jailbroken app
@@ -82,6 +81,7 @@ jobs:
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             PRODUCT_BUNDLE_IDENTIFIER="$TARGET_BUNDLE_ID" \
+            DOL_PBID_ORGANIZATION_IDENTIFIER="me.oatmealdome" \
             DOL_BUILD_SOURCE="$DOL_BUILD_SOURCE" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
@@ -101,6 +101,26 @@ jobs:
             "-" \
             "$GITHUB_WORKSPACE/Source/iOS/App/Project/Entitlements/Public.entitlements" \
             "$GITHUB_WORKSPACE/products/Non-Jailbroken.ipa"
+
+      - name: Verify IPA payload identifier
+        run: |
+          python3 - <<'PY'
+          import os
+          import plistlib
+          import zipfile
+
+          with zipfile.ZipFile("products/Non-Jailbroken.ipa") as ipa:
+              matches = [name for name in ipa.namelist()
+                         if name == "Payload/DolphiniOS.app/Info.plist"]
+              if len(matches) != 1:
+                  raise SystemExit("Packaged IPA missing its app Info.plist")
+              info = plistlib.loads(ipa.read(matches[0]))
+          actual = info.get("CFBundleIdentifier")
+          expected = os.environ["TARGET_BUNDLE_ID"]
+          print(f"Packaged IPA identifier: {actual}")
+          if actual != expected:
+              raise SystemExit(f"IPA identifier {actual!r} != original {expected!r}")
+          PY
 
       - name: Upload IPA
         if: always()
