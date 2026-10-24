@@ -18,6 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, setter=setIsExternalDisplayConnected:) bool isExternalDisplayConnected;
 @property (nonatomic) bool userRequestedPause;
 
+// Exposes the most recent boot result to the in-app diagnostics panel.
+@property (atomic, copy, readonly) NSString* lastBootOutcome;
+
 - (void)registerMainDisplayView:(UIView*)mainView;
 - (void)registerExternalDisplayView:(UIView*)externalView;
 - (void)runEmulationWithBootParameter:(EmulationBootParameter*)bootParameter;

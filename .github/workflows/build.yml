@@ -1,55 +1,132 @@
-name: Build
+name: Build iOS IPA
 
+# Builds an update for the OatmealDome stable non-jailbroken app, not
+# another independently identified installation. Push builds are limited to
+# the development branch; manual rebuilds stay available.
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+    branches:
+      - feature/controller-mapping-fix
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    # runs-on: macos-12
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-26
+    timeout-minutes: 240
 
     env:
-      XCODE_COMMON_BUILD_ARGS: -project Source/iOS/App/DolphiniOS.xcodeproj -derivedDataPath "${{ github.workspace }}/build-Xcode" -sdk iphoneos -destination generic/platform=iOS DOL_PBID_ORGANIZATION_IDENTIFIER="me.oatmealdome" DOL_BUILD_SOURCE="development" CODE_SIGNING_ALLOWED="NO" CODE_SIGNING_REQUIRED="NO"
-    
+      XCODE_PROJECT: Source/iOS/App/DolphiniOS.xcodeproj
+      XCODE_DERIVED_DATA: ${{ github.workspace }}/build-Xcode
+      ARCHIVE_PATH: ${{ github.workspace }}/archives/NonJailbroken.xcarchive
+      # Exact ID published for the original stable OatmealDome NJB IPA.
+      # Capital D and IOS are required to match the existing yellow LiveContainer guest.
+      TARGET_BUNDLE_ID: me.oatmealdome.DolphiniOS-njb
+      DOL_BUILD_SOURCE: development
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: recursive
 
-      # - name: Set Xcode Version
-      #   run: sudo xcode-select -s /Applications/Xcode_14.2.app
+      # Xcode 26+ is required for the project's AppIcon_Glass.icon Icon Composer asset.
+      - name: Apply Xcode 26 compatibility fix for bundled fmt
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
 
-      # - name: Install Build Utilities
-      #   run: |
-      #     brew install cmake ninja bartycrouch
-      #     /usr/bin/python3 -m pip install polib
+          header = Path("Externals/fmt/fmt/include/fmt/chrono.h")
+          original = header.read_text()
+          old = 'FMT_STRING("{:.{}f}")'
+          new = 'fmt::runtime("{:.{}f}")'
+          if original.count(old) != 1:
+              raise SystemExit("Unexpected fmt version: expected one format call")
+          header.write_text(original.replace(old, new, 1))
+          print("Patched bundled fmt chrono dynamic-precision formatting for Xcode 26")
+          PY
 
-      - name: Set Schema
+      - name: Check Xcode toolchain
         run: |
-          echo "XCODE_CONFIGURATION_NJB=Release (Non-Jailbroken)" >> $GITHUB_ENV
-          echo "XCODE_CONFIGURATION_JB=Release (Jailbroken)" >> $GITHUB_ENV
-          echo "XCODE_CONFIGURATION_TS=Release (TrollStore)" >> $GITHUB_ENV
-          echo "DEB_CONTROL_NAME=control-normal" >> $GITHUB_ENV
-      
-      - name: Build Application
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install build dependencies
         run: |
-          rm -rf "${{ github.workspace }}/archives" || true
-          mkdir "${{ github.workspace }}/archives"
-          xcodebuild archive -archivePath "${{ github.workspace }}/archives/NonJailbroken.xcarchive" -configuration "${{ env.XCODE_CONFIGURATION_NJB }}" -scheme "DiOS (NJB)" ${{ env.XCODE_COMMON_BUILD_ARGS }}
-          xcodebuild archive -archivePath "${{ github.workspace }}/archives/Jailbroken.xcarchive" -configuration "${{ env.XCODE_CONFIGURATION_JB }}" -scheme "DiOS (JB)" ${{ env.XCODE_COMMON_BUILD_ARGS }}
-          xcodebuild archive -archivePath "${{ github.workspace }}/archives/TrollStore.xcarchive" -configuration "${{ env.XCODE_CONFIGURATION_TS }}" -scheme "DiOS (JB)" ${{ env.XCODE_COMMON_BUILD_ARGS }}
-      
-      - name: Build IPA Files
+          brew install cmake ninja bartycrouch
+
+      - name: Validate existing app identifier
         run: |
-          mkdir "${{ github.workspace }}/products"
-          "${{ github.workspace }}/Source/iOS/App/Project/Scripts/CreateIpa.sh" "${{ github.workspace }}/archives/NonJailbroken.xcarchive/Products/Applications/DolphiniOS.app" "OatmealDome Software" "${{ github.workspace }}/Source/iOS/App/Project/Entitlements/Public.entitlements" "${{ github.workspace }}/products/Non-Jailbroken.ipa"
-          "${{ github.workspace }}/Source/iOS/App/Project/Scripts/CreateIpa.sh" "${{ github.workspace }}/archives/TrollStore.xcarchive/Products/Applications/DolphiniOS.app" "OatmealDome Software" "${{ github.workspace }}/Source/iOS/App/Project/Entitlements/Private.entitlements" "${{ github.workspace }}/products/TrollStore.tipa"
-      
-      - name: Build DEB File
+          python3 - <<'PY'
+          import os
+          import re
+          bundle_id = os.environ.get("TARGET_BUNDLE_ID", "")
+          if bundle_id != "me.oatmealdome.DolphiniOS-njb":
+              raise SystemExit("Build refuses to create a different LiveContainer guest.")
+          print(f"Original OatmealDome stable bundle ID: {bundle_id}")
+          PY
+
+      - name: Build non-jailbroken app
         run: |
-          "${{ github.workspace }}/Source/iOS/App/Project/Scripts/CreateDeb.sh" "${{ github.workspace }}/archives/Jailbroken.xcarchive/Products/Applications/DolphiniOS.app" "OatmealDome Software" "${{ github.workspace }}/Source/iOS/App/Project/Entitlements/Private.entitlements" "${{ github.workspace }}/Source/iOS/App/Project/Package/Deb/${{ env.DEB_CONTROL_NAME }}.in" "${{ github.workspace }}/Source/iOS/App/Project/Package/Deb/postinst.sh" "${{ github.workspace }}/Source/iOS/App/Project/Package/Deb/postrm.sh" "Applications" "${{ github.workspace }}/products/Jailbroken-Rootful.deb"
-          "${{ github.workspace }}/Source/iOS/App/Project/Scripts/CreateDeb.sh" "${{ github.workspace }}/archives/Jailbroken.xcarchive/Products/Applications/DolphiniOS.app" "OatmealDome Software" "${{ github.workspace }}/Source/iOS/App/Project/Entitlements/Private.entitlements" "${{ github.workspace }}/Source/iOS/App/Project/Package/Deb/${{ env.DEB_CONTROL_NAME }}-rootless.in" "${{ github.workspace }}/Source/iOS/App/Project/Package/Deb/postinst.sh" "${{ github.workspace }}/Source/iOS/App/Project/Package/Deb/postrm.sh" "var/jb/Applications" "${{ github.workspace }}/products/Jailbroken-Rootless.deb"
-      
+          mkdir -p archives products
+          xcodebuild archive \
+            -project "$XCODE_PROJECT" \
+            -derivedDataPath "$XCODE_DERIVED_DATA" \
+            -archivePath "$ARCHIVE_PATH" \
+            -configuration "Release (Non-Jailbroken)" \
+            -scheme "DiOS (NJB)" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            PRODUCT_BUNDLE_IDENTIFIER="$TARGET_BUNDLE_ID" \
+            DOL_PBID_ORGANIZATION_IDENTIFIER="me.oatmealdome" \
+            DOL_BUILD_SOURCE="$DOL_BUILD_SOURCE" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Verify built IPA app identity
+        run: |
+          ACTUAL_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$ARCHIVE_PATH/Products/Applications/DolphiniOS.app/Info.plist")"
+          echo "Built CFBundleIdentifier: $ACTUAL_BUNDLE_ID"
+          if [ "$ACTUAL_BUNDLE_ID" != "$TARGET_BUNDLE_ID" ]; then
+            echo "::error::Built bundle ID does not match the original installed app ID."
+            exit 1
+          fi
+
+      - name: Package IPA
+        run: |
+          "$GITHUB_WORKSPACE/Source/iOS/App/Project/Scripts/CreateIpa.sh" \
+            "$ARCHIVE_PATH/Products/Applications/DolphiniOS.app" \
+            "-" \
+            "$GITHUB_WORKSPACE/Source/iOS/App/Project/Entitlements/Public.entitlements" \
+            "$GITHUB_WORKSPACE/products/Non-Jailbroken.ipa"
+
+      - name: Verify IPA payload identifier
+        run: |
+          python3 - <<'PY'
+          import os
+          import plistlib
+          import zipfile
+
+          with zipfile.ZipFile("products/Non-Jailbroken.ipa") as ipa:
+              matches = [name for name in ipa.namelist()
+                         if name == "Payload/DolphiniOS.app/Info.plist"]
+              if len(matches) != 1:
+                  raise SystemExit("Packaged IPA missing its app Info.plist")
+              info = plistlib.loads(ipa.read(matches[0]))
+          actual = info.get("CFBundleIdentifier")
+          expected = os.environ["TARGET_BUNDLE_ID"]
+          print(f"Packaged IPA identifier: {actual}")
+          if actual != expected:
+              raise SystemExit(f"IPA identifier {actual!r} != original {expected!r}")
+          PY
+
+      - name: Upload IPA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DolphiniOS-Combined-${{ github.sha }}
+          path: products/*.ipa
+          if-no-files-found: warn
+          retention-days: 7

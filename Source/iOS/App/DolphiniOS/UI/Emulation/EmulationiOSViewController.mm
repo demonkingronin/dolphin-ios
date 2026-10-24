@@ -4,11 +4,18 @@
 #import "EmulationiOSViewController.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
 
 #import "Common/IOFile.h"
+#import "Common/FileUtil.h"
+#import "Common/IniFile.h"
 
 #import "Core/ConfigManager.h"
 #import "Core/Config/iOSSettings.h"
+#import "Core/Config/GraphicsSettings.h"
 #import "Core/Config/MainSettings.h"
 #import "Core/Config/WiimoteSettings.h"
 #import "Core/HW/GCPad.h"
@@ -20,8 +27,13 @@
 #import "Core/System.h"
 
 #import "InputCommon/InputConfig.h"
+#import "InputCommon/ControllerEmu/ControllerEmu.h"
+#import "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
+#import "InputCommon/ControllerInterface/ControllerInterface.h"
 
 #import "VideoCommon/Present.h"
+#import "VideoCommon/VideoConfig.h"
+#import "FoundationStringUtil.h"
 
 #import "EmulationCoordinator.h"
 #import "HostNotifications.h"
@@ -44,6 +56,8 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 @implementation EmulationiOSViewController {
   DOLEmulationVisibleTouchPad _visibleTouchPad;
   int _stateSlot;
+  BOOL _controllerEditorOpen;
+  BOOL _controllerEditorWasPaused;
 }
 
 - (void)viewDidLoad {
@@ -97,25 +111,365 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
   [[NSNotificationCenter defaultCenter] removeObserver:self name:DOLEmulationDidEndNotification object:nil];
 }
 
+
+// Present Dolphin's existing complete controller editor without ending emulation.
+// The game is paused while the editor captures physical button presses.
+- (void)openInGameControllerEditor {
+  if (_controllerEditorOpen)
+    return;
+  UIStoryboard* storyboard = [UIStoryboard storyboardWithName:@"ControllersSettings" bundle:nil];
+  UIViewController* root = [storyboard instantiateInitialViewController];
+  if (!root)
+    return;
+  _controllerEditorOpen = YES;
+  _controllerEditorWasPaused = [EmulationCoordinator shared].userRequestedPause;
+  [EmulationCoordinator shared].userRequestedPause = YES;
+  root.navigationItem.title = @"Controllers";
+  root.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                  target:self action:@selector(closeInGameControllerEditor)];
+  UINavigationController* sheet = [[UINavigationController alloc] initWithRootViewController:root];
+  sheet.modalPresentationStyle = UIModalPresentationPageSheet;
+  sheet.presentationController.delegate = self;
+  [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)finishInGameControllerEditor {
+  if (!_controllerEditorOpen)
+    return;
+  _controllerEditorOpen = NO;
+  [EmulationCoordinator shared].userRequestedPause = _controllerEditorWasPaused;
+  if (Core::System::GetInstance().IsWii())
+    [self updateVisibleTouchPadToWii];
+  else
+    [self updateVisibleTouchPadToGameCube];
+  [self recreateMenu];
+}
+
+- (void)closeInGameControllerEditor {
+  [self dismissViewControllerAnimated:YES completion:^{
+    [self finishInGameControllerEditor];
+  }];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController {
+  [self finishInGameControllerEditor];
+}
+
+// Persist separate device-specific snapshots so touchscreen and physical
+// controller bindings survive switching and app restarts. The user-facing
+// profile names in Config/Profiles are never overwritten.
+- (std::string)automaticInputProfileForDevice:(const std::string&)device
+                                   gameCube:(BOOL)isGameCube {
+  uint64_t hash = 14695981039346656037ULL;
+  for (unsigned char character : device) {
+    hash ^= character;
+    hash *= 1099511628211ULL;
+  }
+  char filename[96];
+  std::snprintf(filename, sizeof(filename), "%s-%016llx.ini",
+                isGameCube ? "GCPad" : "Wiimote",
+                static_cast<unsigned long long>(hash));
+  return File::GetUserPath(D_CONFIG_IDX) + "AutoInputProfiles/" + filename;
+}
+
+- (void)showInputSwitchError:(NSString*)message {
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Controller Switch"
+      message:message preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+      style:UIAlertActionStyleDefault handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (BOOL)selectInputDevice:(const std::string&)device gameCube:(BOOL)isGameCube {
+  InputConfig* config = isGameCube ? Pad::GetConfig() : Wiimote::GetConfig();
+  ControllerEmu::EmulatedController* controller = config->GetController(0);
+  if (!controller || device.empty())
+    return NO;
+
+  const std::string oldDevice = controller->GetDefaultDevice().ToString();
+  ciface::Core::DeviceQualifier qualifier;
+  qualifier.FromString(device);
+  const BOOL touchSelected = qualifier.source == "iOS" &&
+      qualifier.name == "Touchscreen";
+  const BOOL physicalSelected = qualifier.source == "MFi";
+
+  // Repair an already-selected touchscreen from the previous broken build:
+  // its default device was changed but its 'Buttons/A' still says 'Button A'
+  // (the MFi name), not the virtual 'Button 0' / 'Button 100' control.
+  BOOL staleTouchMapping = NO;
+  const std::string targetSnapshot = [self automaticInputProfileForDevice:device
+                                                                gameCube:isGameCube];
+  if (touchSelected && oldDevice == device && !File::Exists(targetSnapshot)) {
+    Common::IniFile current;
+    controller->SaveConfig(current.GetOrCreateSection("Profile"));
+    std::string mappedA;
+    current.GetOrCreateSection("Profile")->Get("Buttons/A", &mappedA, "");
+    staleTouchMapping = mappedA.find("Button A") != std::string::npos ||
+                        mappedA.find("MFi/") != std::string::npos;
+  }
+  if (oldDevice != device || staleTouchMapping) {
+    Common::IniFile next;
+    BOOL hasNext = NO;
+    BOOL usingFactoryProfile = NO;
+    if (File::Exists(targetSnapshot)) {
+      if (!next.Load(targetSnapshot)) {
+        [self showInputSwitchError:@"The saved device mapping could not be loaded. No settings were changed."];
+        return NO;
+      }
+      hasNext = YES;
+    } else if (touchSelected || physicalSelected) {
+      const std::string factoryFile = config->GetSysProfileDirectoryPath() +
+          (touchSelected ? "Touchscreen.ini" : "Physical Controller.ini");
+      if (!next.Load(factoryFile)) {
+        [self showInputSwitchError:@"The bundled mapping for this device could not be loaded. No settings were changed."];
+        return NO;
+      }
+      hasNext = YES;
+      usingFactoryProfile = YES;
+    }
+
+    u32 previousExtension = 0;
+    ControllerEmu::Attachments* wiiAttachments = nullptr;
+    if (!isGameCube) {
+      wiiAttachments = static_cast<ControllerEmu::Attachments*>(
+          Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
+      previousExtension = wiiAttachments->GetSelectedAttachment();
+    }
+
+    // Never overwrite a good touchscreen snapshot with the stale MFi map
+    // being repaired. All other outgoing maps get their own durable backup.
+    if (!oldDevice.empty() && !staleTouchMapping) {
+      Common::IniFile outgoing;
+      controller->SaveConfig(outgoing.GetOrCreateSection("Profile"));
+      const std::string backup = [self automaticInputProfileForDevice:oldDevice
+                                                            gameCube:isGameCube];
+      if (!File::CreateFullPath(backup) || !outgoing.Save(backup)) {
+        [self showInputSwitchError:@"The previous controller mapping could not be backed up. No settings were changed."];
+        return NO;
+      }
+    }
+
+    if (hasNext) {
+      controller->LoadDefaults(g_controller_interface);
+      controller->LoadConfig(next.GetOrCreateSection("Profile"));
+      if (usingFactoryProfile && wiiAttachments)
+        wiiAttachments->SetSelectedAttachment(previousExtension);
+    }
+    controller->SetDefaultDevice(device);
+    controller->UpdateReferences(g_controller_interface);
+    config->SaveConfig();
+  }
+
+  // Showing a touchpad must also activate its matching device's input data.
+  if (touchSelected) {
+    if (isGameCube)
+      [self updateVisibleTouchPadToGameCube];
+    else
+      [self updateVisibleTouchPadToWii];
+  } else if ((isGameCube && _visibleTouchPad == DOLEmulationVisibleTouchPadGameCube) ||
+             (!isGameCube && (_visibleTouchPad == DOLEmulationVisibleTouchPadWiimote ||
+                               _visibleTouchPad == DOLEmulationVisibleTouchPadSidewaysWiimote ||
+                               _visibleTouchPad == DOLEmulationVisibleTouchPadClassic))) {
+    [self updateVisibleTouchPadWithType:DOLEmulationVisibleTouchPadNone];
+  }
+  [self recreateMenu];
+  return YES;
+}
+
+- (void)enableTouchControlsForGameCube:(BOOL)isGameCube {
+  const std::string touchscreen = isGameCube ? "iOS/0/Touchscreen" : "iOS/4/Touchscreen";
+  [self selectInputDevice:touchscreen gameCube:isGameCube];
+}
+
+// Select a device together with its stored button/axis mappings.
+- (UIMenu*)inputDeviceMenuForGameCube:(BOOL)isGameCube {
+  InputConfig* config = isGameCube ? Pad::GetConfig() : Wiimote::GetConfig();
+  ControllerEmu::EmulatedController* controller = config->GetController(0);
+  if (!controller)
+    return [UIMenu menuWithTitle:isGameCube ? @"GameCube Port 1" : @"Wii Remote 1"
+                           children:@[]];
+  const std::string selected = controller->GetDefaultDevice().ToString();
+  NSMutableArray<UIMenuElement*>* actions = [NSMutableArray array];
+  for (const std::string& device : g_controller_interface.GetAllDeviceStrings()) {
+    ciface::Core::DeviceQualifier qualifier;
+    qualifier.FromString(device);
+    // Port 1 GameCube touchpad is device 0; Wii touchpad is device 4.
+    if (qualifier.source == "iOS" && qualifier.name == "Touchscreen" &&
+        qualifier.cid != (isGameCube ? 0 : 4))
+      continue;
+    NSString* value = CppToFoundationString(device);
+    NSString* label = qualifier.source == "iOS" && qualifier.name == "Touchscreen" ?
+        @"Touchscreen" : value;
+    UIAction* action = [UIAction actionWithTitle:label image:nil identifier:nil
+                                        handler:^(__unused UIAction* sender) {
+      [self selectInputDevice:FoundationToCppString(value) gameCube:isGameCube];
+    }];
+    action.state = selected == device ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [actions addObject:action];
+  }
+  if (actions.count == 0) {
+    UIAction* unavailable = [UIAction actionWithTitle:@"No input devices detected" image:nil
+                                          identifier:nil handler:^(__unused UIAction* action) {}];
+    unavailable.attributes = UIMenuElementAttributesDisabled;
+    [actions addObject:unavailable];
+  }
+  return [UIMenu menuWithTitle:isGameCube ? @"GameCube Port 1" : @"Wii Remote 1"
+                        image:[UIImage systemImageNamed:@"gamecontroller"]
+                   identifier:nil options:0 children:actions];
+}
+
+- (void)refreshGearAfterLiveChange {
+  [self recreateMenu];
+  [self.navigationController setNavigationBarHidden:YES animated:YES];
+}
+
+// Changes here are known to be observed by Dolphin's running video renderer.
+// Exclude backend, shader-startup and other restart-only options.
+- (UIMenu*)liveGraphicsMenu {
+  NSMutableArray<UIMenuElement*>* resolutions = [NSMutableArray array];
+  const int currentScale = Config::Get(Config::GFX_EFB_SCALE);
+  const int maxScale = std::max(1, Config::Get(Config::GFX_MAX_EFB_SCALE));
+  for (int scale = 0; scale <= std::min(maxScale, 8); ++scale) {
+    NSString* title = scale == 0 ? @"Auto" :
+        [NSString stringWithFormat:@"%d× Native", scale];
+    UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil
+                                        handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_EFB_SCALE, scale);
+      [self refreshGearAfterLiveChange];
+    }];
+    action.state = currentScale == scale ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [resolutions addObject:action];
+  }
+  if (currentScale > 8) {
+    UIAction* current = [UIAction actionWithTitle:[NSString stringWithFormat:@"%d× Native", currentScale]
+                                           image:nil identifier:nil handler:^(__unused UIAction* sender) {}];
+    current.state = UIMenuElementStateOn;
+    [resolutions addObject:current];
+  }
+
+  NSMutableArray<UIMenuElement*>* aspectChoices = [NSMutableArray array];
+  for (NSDictionary* option in @[
+      @{@"name": @"Auto", @"value": @(static_cast<int>(AspectMode::Auto))},
+      @{@"name": @"Force 16:9", @"value": @(static_cast<int>(AspectMode::ForceWide))},
+      @{@"name": @"Force 4:3", @"value": @(static_cast<int>(AspectMode::ForceStandard))},
+      @{@"name": @"Stretch to Window", @"value": @(static_cast<int>(AspectMode::Stretch))}]) {
+    AspectMode mode = static_cast<AspectMode>([option[@"value"] intValue]);
+    UIAction* action = [UIAction actionWithTitle:option[@"name"] image:nil identifier:nil
+                                        handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_ASPECT_RATIO, mode);
+      [self refreshGearAfterLiveChange];
+    }];
+    action.state = mode == Config::Get(Config::GFX_ASPECT_RATIO) ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [aspectChoices addObject:action];
+  }
+
+  NSMutableArray<UIMenuElement*>* filters = [NSMutableArray array];
+  for (NSDictionary* option in @[
+      @{@"name": @"Default", @"value": @(-1)},
+      @{@"name": @"1× Anisotropic", @"value": @(0)},
+      @{@"name": @"2× Anisotropic", @"value": @(1)},
+      @{@"name": @"4× Anisotropic", @"value": @(2)},
+      @{@"name": @"8× Anisotropic", @"value": @(3)},
+      @{@"name": @"16× Anisotropic", @"value": @(4)}]) {
+    AnisotropicFilteringMode mode = static_cast<AnisotropicFilteringMode>([option[@"value"] intValue]);
+    UIAction* action = [UIAction actionWithTitle:option[@"name"] image:nil identifier:nil
+                                        handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_ENHANCE_MAX_ANISOTROPY, mode);
+      [self refreshGearAfterLiveChange];
+    }];
+    action.state = mode == Config::Get(Config::GFX_ENHANCE_MAX_ANISOTROPY) ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [filters addObject:action];
+  }
+  NSMutableArray<UIMenuElement*>* textureFilters = [NSMutableArray array];
+  NSArray<NSString*>* textureNames = @[@"Default", @"Force Nearest", @"Force Linear"];
+  const TextureFilteringMode textureValues[] = {
+      TextureFilteringMode::Default, TextureFilteringMode::Nearest, TextureFilteringMode::Linear};
+  for (NSUInteger index = 0; index < textureNames.count; ++index) {
+    const TextureFilteringMode value = textureValues[index];
+    UIAction* action = [UIAction actionWithTitle:textureNames[index] image:nil
+        identifier:nil handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::GFX_ENHANCE_FORCE_TEXTURE_FILTERING, value);
+      [self refreshGearAfterLiveChange];
+    }];
+    action.state = Config::Get(Config::GFX_ENHANCE_FORCE_TEXTURE_FILTERING) == value ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [textureFilters addObject:action];
+  }
+  BOOL vsyncEnabled = Config::Get(Config::GFX_VSYNC);
+  UIAction* vsync = [UIAction actionWithTitle:@"V-Sync" image:nil identifier:nil
+                                    handler:^(__unused UIAction* sender) {
+    Config::SetBaseOrCurrent(Config::GFX_VSYNC, !Config::Get(Config::GFX_VSYNC));
+    [self refreshGearAfterLiveChange];
+  }];
+  vsync.state = vsyncEnabled ? UIMenuElementStateOn : UIMenuElementStateOff;
+  UIAction* fps = [UIAction actionWithTitle:@"Show FPS" image:nil identifier:nil
+                                  handler:^(__unused UIAction* sender) {
+    Config::SetBaseOrCurrent(Config::GFX_SHOW_FPS, !Config::Get(Config::GFX_SHOW_FPS));
+    [self refreshGearAfterLiveChange];
+  }];
+  fps.state = Config::Get(Config::GFX_SHOW_FPS) ?
+      UIMenuElementStateOn : UIMenuElementStateOff;
+
+  return [UIMenu menuWithTitle:@"Graphics" image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+                   identifier:nil options:0 children:@[
+    [UIMenu menuWithTitle:@"Internal Resolution" image:nil identifier:nil
+                 options:0 children:resolutions],
+    [UIMenu menuWithTitle:@"Aspect Ratio" image:nil identifier:nil
+                 options:0 children:aspectChoices],
+    [UIMenu menuWithTitle:@"Anisotropic Filtering" image:nil identifier:nil
+                 options:0 children:filters],
+    [UIMenu menuWithTitle:@"Texture Filtering" image:nil identifier:nil
+                 options:0 children:textureFilters],
+    vsync, fps
+  ]];
+}
+
+- (UIMenu*)liveGameOptionsMenu {
+  float current = Config::Get(Config::MAIN_EMULATION_SPEED);
+  NSMutableArray<UIMenuElement*>* speeds = [NSMutableArray array];
+  for (NSNumber* number in @[@(0.5f), @(0.75f), @(1.0f), @(1.25f), @(1.5f), @(2.0f)]) {
+    float speed = number.floatValue;
+    NSString* title = [NSString stringWithFormat:@"%d%%", (int)(speed * 100)];
+    UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil
+                                        handler:^(__unused UIAction* sender) {
+      Config::SetBaseOrCurrent(Config::MAIN_EMULATION_SPEED, speed);
+      [self refreshGearAfterLiveChange];
+    }];
+    action.state = std::fabs(current - speed) < 0.01f ?
+        UIMenuElementStateOn : UIMenuElementStateOff;
+    [speeds addObject:action];
+  }
+  return [UIMenu menuWithTitle:@"Game Settings" image:[UIImage systemImageNamed:@"speedometer"]
+                   identifier:nil options:0 children:@[
+      [UIMenu menuWithTitle:@"Emulation Speed" image:nil identifier:nil options:0 children:speeds]
+  ]];
+}
+
 - (void)recreateMenu {
   NSMutableArray<UIMenuElement*>* controllerActions = [[NSMutableArray alloc] init];
 
   NSMutableArray<UIMenuElement*>* visibleControllerActions = [[NSMutableArray alloc] init];
 
-  bool wiimoteTouchPadAttached = [self isWiimoteTouchPadAttached] && Core::System::GetInstance().IsWii();
-  bool gamecubeTouchPadAttached = [self isGameCubeTouchPadAttached];
+  // Let the user turn on touch controls even if a physical controller is
+  // currently bound. Pressing the item will switch the actual input mapping.
+  bool wiimoteTouchPadAttached = Core::System::GetInstance().IsWii() &&
+      Config::Get(Config::GetInfoForWiimoteSource(0)) == WiimoteSource::Emulated;
+  bool gamecubeTouchPadAttached =
+      Config::Get(Config::GetInfoForSIDevice(0)) != SerialInterface::SIDEVICE_NONE;
 
   if (wiimoteTouchPadAttached) {
     UIAction* wiimoteAction = [UIAction actionWithTitle:DOLCoreLocalizedString(@"Wii Remote") image:nil identifier:nil handler:^(UIAction*) {
-      [self updateVisibleTouchPadToWii];
-      [self recreateMenu];
-
+      [self enableTouchControlsForGameCube:NO];
       [self.navigationController setNavigationBarHidden:true animated:true];
     }];
 
-    if (_visibleTouchPad == DOLEmulationVisibleTouchPadWiimote ||
-        _visibleTouchPad == DOLEmulationVisibleTouchPadSidewaysWiimote ||
-        _visibleTouchPad == DOLEmulationVisibleTouchPadClassic) {
+    if ([self isWiimoteTouchPadAttached] &&
+        (_visibleTouchPad == DOLEmulationVisibleTouchPadWiimote ||
+         _visibleTouchPad == DOLEmulationVisibleTouchPadSidewaysWiimote ||
+         _visibleTouchPad == DOLEmulationVisibleTouchPadClassic)) {
       wiimoteAction.state = UIMenuElementStateOn;
     } else {
       wiimoteAction.state = UIMenuElementStateOff;
@@ -126,13 +480,12 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 
   if (gamecubeTouchPadAttached) {
     UIAction* gamecubeAction = [UIAction actionWithTitle:DOLCoreLocalizedString(@"GameCube Controller") image:nil identifier:nil handler:^(UIAction*) {
-      [self updateVisibleTouchPadToGameCube];
-      [self recreateMenu];
-
+      [self enableTouchControlsForGameCube:YES];
       [self.navigationController setNavigationBarHidden:true animated:true];
     }];
 
-    if (_visibleTouchPad == DOLEmulationVisibleTouchPadGameCube) {
+    if ([self isGameCubeTouchPadAttached] &&
+        _visibleTouchPad == DOLEmulationVisibleTouchPadGameCube) {
       gamecubeAction.state = UIMenuElementStateOn;
     } else {
       gamecubeAction.state = UIMenuElementStateOff;
@@ -160,6 +513,15 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
 
   UIMenu* visibleControllerMenu = [UIMenu menuWithTitle:@"Touch Controller" image:[UIImage systemImageNamed:@"gamecontroller"] identifier:nil options:0 children:visibleControllerActions];
   [controllerActions addObject:visibleControllerMenu];
+  // Connected devices and full mapping remain accessible without exiting the game.
+  [controllerActions addObject:[self inputDeviceMenuForGameCube:YES]];
+  if (Core::System::GetInstance().IsWii())
+    [controllerActions addObject:[self inputDeviceMenuForGameCube:NO]];
+  [controllerActions addObject:[UIAction actionWithTitle:@"Configure Controllers…"
+                                                    image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+                                               identifier:nil handler:^(__unused UIAction* action) {
+    [self openInGameControllerEditor];
+  }]];
 
   if (wiimoteTouchPadAttached) {
     TCWiiTouchIRMode irMode = (TCWiiTouchIRMode)Config::Get(Config::MAIN_TOUCH_PAD_IR_MODE);
@@ -213,6 +575,10 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
   
   NSMutableArray<UIMenuElement*>* menuItems = [[NSMutableArray alloc] init];
   [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Controllers") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:controllerActions]];
+  [menuItems addObject:[UIMenu menuWithTitle:@"Live Settings" image:nil identifier:nil
+                            options:UIMenuOptionsDisplayInline children:@[
+    [self liveGraphicsMenu], [self liveGameOptionsMenu]
+  ]]];
   [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Save State") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
     [UIMenu menuWithTitle:DOLCoreLocalizedString(@"Select State Slot") image:nil identifier:nil options:0 children:stateSlotActions],
     [UIAction actionWithTitle:DOLCoreLocalizedString(@"Load State") image:[UIImage systemImageNamed:@"tray.and.arrow.down"] identifier:nil handler:^(UIAction*) {
@@ -231,6 +597,22 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
     }]
   ]]];
   
+  // Keep the original gear menu's Controllers and Save State actions intact.
+  // Reports are accessed here rather than floating over the game and exit arrow.
+  [menuItems addObject:[UIMenu menuWithTitle:@"Diagnostics"
+      image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
+    [UIAction actionWithTitle:@"Boot Info"
+        image:[UIImage systemImageNamed:@"info.circle"]
+        identifier:nil handler:^(__unused UIAction* action) {
+      [self showLaunchDiagnostics];
+    }],
+    [UIAction actionWithTitle:@"Texture Diagnostics"
+        image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"]
+        identifier:nil handler:^(__unused UIAction* action) {
+      [self showTextureDiagnostics];
+    }]
+  ]]];
+
   if ([self emulateSkylanderPortal] && Core::System::GetInstance().IsWii()) {
     [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Tools") image:nil identifier:nil options:UIMenuOptionsDisplayInline
                  children:@[

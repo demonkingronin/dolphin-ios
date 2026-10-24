@@ -8,6 +8,7 @@
 #import "ActionReplayCodeViewController.h"
 #import "FoundationStringUtil.h"
 #import "GameFilePtrWrapper.h"
+#import "LocalizationUtil.h"
 #import "GeckoCodeViewController.h"
 #import "SoftwarePropertiesInfoViewController.h"
 
@@ -20,7 +21,7 @@
 - (void)viewDidLoad {
   [super viewDidLoad];
   
-  self.navigationItem.title = CppToFoundationString(self.gameFileWrapper.gameFile->GetGameID());
+  self.navigationItem.title = DOLCoreLocalizedString(@"Cheat Codes");
 }
 
 - (IBAction)donePressed:(id)sender {

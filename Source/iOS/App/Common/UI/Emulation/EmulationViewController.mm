@@ -7,6 +7,16 @@
 
 #import <GameController/GameController.h>
 
+#import "Common/Config/Config.h"
+#import "Common/CommonPaths.h"
+#import "Common/FileUtil.h"
+#import "Core/Config/GraphicsSettings.h"
+
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
 #import "Core/ConfigManager.h"
 #import "Core/Config/MainSettings.h"
 #import "Core/Core.h"
@@ -28,17 +38,29 @@
 
 @implementation EmulationViewController {
   bool _didStartEmulation;
+  bool _safeBootSettingsApplied;
+  std::map<Config::Location, std::optional<std::string>> _previousSafeBootSettings;
+  NSString* _gameUsagePath;
+  NSTimer* _gameUsageTimer;
+  NSTimeInterval _unsavedPlaySeconds;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
   
   _didStartEmulation = false;
+  // This test changes only the temporary CurrentRun configuration layer.
+  // It does not touch user's existing global or per-game INI files.
+  if (self.bootParameter.safeBoot)
+    [self applySafeBootSettings];
   
   [[EmulationCoordinator shared] registerMainDisplayView:self.rendererView];
   
   self.rendererView.alpha = 1.0f;
-  
+
+  // Diagnostic commands live in the existing gear menu, keeping gameplay
+  // and the pull-down arrow unobstructed.
+
   // Create right bar button items
   self.stopButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemStop target:self action:@selector(stopPressed)];
   self.pauseButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemPause target:self action:@selector(pausePressed)];
@@ -136,8 +158,289 @@
   }];
 }
 
+- (void)applySafeBootSettings {
+  if (_safeBootSettingsApplied)
+    return;
+  auto layer = Config::GetLayer(Config::LayerType::CurrentRun);
+  if (!layer)
+    return;
+
+  const std::vector<Config::Location> locations = {
+      Config::MAIN_CPU_CORE.GetLocation(),
+      Config::MAIN_GFX_BACKEND.GetLocation(),
+      Config::MAIN_ENABLE_CHEATS.GetLocation(),
+      Config::MAIN_SKIP_IPL.GetLocation(),
+      Config::MAIN_CPU_THREAD.GetLocation(),
+      Config::MAIN_OVERCLOCK_ENABLE.GetLocation()};
+  for (const auto& location : locations)
+    _previousSafeBootSettings[location] = layer->Get<std::string>(location);
+  _safeBootSettingsApplied = true;
+
+  // Cached Interpreter avoids JIT permission failures; the backend is reset to
+  // Dolphin's iOS default. These values override saved GameINI keys for this run.
+  Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::CachedInterpreter);
+  Config::SetCurrent(Config::MAIN_GFX_BACKEND,
+                     Config::MAIN_GFX_BACKEND.GetDefaultValue());
+  Config::SetCurrent(Config::MAIN_ENABLE_CHEATS, false);
+  Config::SetCurrent(Config::MAIN_SKIP_IPL, true);
+  Config::SetCurrent(Config::MAIN_CPU_THREAD, false);
+  Config::SetCurrent(Config::MAIN_OVERCLOCK_ENABLE, false);
+}
+
+- (void)restoreSafeBootSettings {
+  if (!_safeBootSettingsApplied)
+    return;
+  _safeBootSettingsApplied = false;
+
+  auto layer = Config::GetLayer(Config::LayerType::CurrentRun);
+  if (layer) {
+    for (const auto& [location, previousValue] : _previousSafeBootSettings) {
+      if (previousValue)
+        layer->Set(location, *previousValue);
+      else
+        layer->DeleteKey(location);
+    }
+    Config::OnConfigChanged();
+  }
+  _previousSafeBootSettings.clear();
+}
+
+- (void)dealloc {
+  [_gameUsageTimer invalidate];
+  [self savePendingGamePlaytime];
+  // Also covers closing the test screen without ever starting emulation.
+  [self restoreSafeBootSettings];
+}
+
 - (void)startEmulation {
+  // Track only launched games, never Wii System Menu or GameCube IPL.
+  if (self.bootParameter.bootType == EmulationBootTypeFile) {
+    _gameUsagePath = self.bootParameter.usageGamePath ?: self.bootParameter.path;
+    [self updateGameUsageWithSeconds:0 markLaunch:YES];
+    _gameUsageTimer = [NSTimer timerWithTimeInterval:1 target:self
+                                           selector:@selector(gameUsageTick:)
+                                           userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:_gameUsageTimer forMode:NSRunLoopCommonModes];
+  }
   [[EmulationCoordinator shared] runEmulationWithBootParameter:self.bootParameter];
+}
+
+// Count running gameplay time, excluding emulation pauses and startup waiting.
+// Persist periodically to avoid losing the entire session on an app interruption.
+- (void)gameUsageTick:(__unused NSTimer*)timer {
+  if (Core::GetState(Core::System::GetInstance()) != Core::State::Running ||
+      [EmulationCoordinator shared].userRequestedPause)
+    return;
+  _unsavedPlaySeconds += 1.0;
+  if (_unsavedPlaySeconds >= 10.0)
+    [self savePendingGamePlaytime];
+}
+
+- (void)savePendingGamePlaytime {
+  if (_unsavedPlaySeconds <= 0)
+    return;
+  NSTimeInterval seconds = _unsavedPlaySeconds;
+  _unsavedPlaySeconds = 0;
+  [self updateGameUsageWithSeconds:seconds markLaunch:NO];
+}
+
+- (void)updateGameUsageWithSeconds:(NSTimeInterval)seconds markLaunch:(BOOL)markLaunch {
+  if (_gameUsagePath.length == 0)
+    return;
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSMutableDictionary* usage = [[defaults dictionaryForKey:@"DOLGameUsageStatisticsV1"] mutableCopy] ?: [NSMutableDictionary dictionary];
+  NSMutableDictionary* game = [usage[_gameUsagePath] mutableCopy] ?: [NSMutableDictionary dictionary];
+  if (markLaunch)
+    game[@"lastPlayed"] = @([[NSDate date] timeIntervalSince1970]);
+  game[@"timePlayed"] = @([game[@"timePlayed"] doubleValue] + seconds);
+  usage[_gameUsagePath] = game;
+  [defaults setObject:usage forKey:@"DOLGameUsageStatisticsV1"];
+}
+
+// "Found 0 custom textures" comes from Dolphin's HiresTexture::Update.
+// Match its real game-ID directory selection and tex1_ filename rules while
+// reporting the exact active guest storage path, not a guessed Files location.
+- (NSString*)replacementTextureDiagnostics {
+  NSString* gameID = CppToFoundationString(SConfig::GetInstance().GetGameID());
+  NSString* textureRoot = CppToFoundationString(File::GetUserPath(D_HIRESTEXTURES_IDX));
+  NSString* userRoot = CppToFoundationString(File::GetUserPath(D_USER_IDX));
+  BOOL enabled = Config::Get(Config::GFX_HIRES_TEXTURES);
+  NSFileManager* fm = [NSFileManager defaultManager];
+
+  NSString* selectedFolder = [textureRoot stringByAppendingPathComponent:gameID ?: @""];
+  BOOL selectedIsDirectory = NO;
+  BOOL selectedExists = [fm fileExistsAtPath:selectedFolder
+                                isDirectory:&selectedIsDirectory] && selectedIsDirectory;
+  BOOL regionFallback = NO;
+
+  // Dolphin checks the 3-character folder only if the 6-character
+  // region-specific folder does not exist.
+  if (!selectedExists && gameID.length >= 3) {
+    NSString* fallback = [textureRoot stringByAppendingPathComponent:
+                          [gameID substringToIndex:3]];
+    BOOL fallbackIsDir = NO;
+    if ([fm fileExistsAtPath:fallback isDirectory:&fallbackIsDir] && fallbackIsDir) {
+      selectedFolder = fallback;
+      selectedExists = YES;
+      regionFallback = YES;
+    }
+  }
+
+  NSUInteger foundDDS = 0;
+  NSUInteger foundPNG = 0;
+  NSUInteger recognized = 0;
+  NSString* firstFile = @"(none)";
+  if (selectedExists) {
+    NSDirectoryEnumerator<NSString*>* files = [fm enumeratorAtPath:selectedFolder];
+    for (NSString* relative in files) {
+      NSString* ext = relative.pathExtension.lowercaseString;
+      if (![ext isEqualToString:@"dds"] && ![ext isEqualToString:@"png"])
+        continue;
+      if ([ext isEqualToString:@"dds"])
+        foundDDS++;
+      else
+        foundPNG++;
+      if (firstFile.length == 0 || [firstFile isEqualToString:@"(none)"])
+        firstFile = relative.lastPathComponent;
+      if ([relative.lastPathComponent hasPrefix:@"tex1_"])
+        recognized++;
+    }
+  }
+
+  // Also check the exact folder the user expects, without guessing that this
+  // is necessarily the currently running game's ID.
+  NSString* expectedFolder = [textureRoot stringByAppendingPathComponent:@"RDSE70"];
+  BOOL expectedIsDirectory = NO;
+  BOOL expectedExists = [fm fileExistsAtPath:expectedFolder
+                                isDirectory:&expectedIsDirectory] && expectedIsDirectory;
+  NSUInteger expectedTextures = 0;
+  if (expectedExists && ![selectedFolder isEqualToString:expectedFolder]) {
+    for (NSString* relative in [fm enumeratorAtPath:expectedFolder]) {
+      NSString* ext = relative.pathExtension.lowercaseString;
+      if (([ext isEqualToString:@"dds"] || [ext isEqualToString:@"png"]) &&
+          [relative.lastPathComponent hasPrefix:@"tex1_"])
+        expectedTextures++;
+    }
+  } else if (expectedExists) {
+    expectedTextures = recognized;
+  }
+
+  return [NSString stringWithFormat:
+      @"DolphiniOS texture diagnostics\n"
+      @"Running game ID: %@\n"
+      @"HD Textures enabled: %@\n"
+      @"Active Dolphin Documents: %@\n"
+      @"Texture root: %@\n"
+      @"Folder Dolphin selected: %@\n"
+      @"Selected folder exists: %@\n"
+      @"Region-free fallback: %@\n"
+      @"DDS files in selected folder: %lu\n"
+      @"PNG files in selected folder: %lu\n"
+      @"Recognized tex1_ files: %lu\n"
+      @"Example file: %@\n"
+      @"Expected RDSE70 folder: %@\n"
+      @"RDSE70 exists in this guest: %@\n"
+      @"Recognized files under RDSE70: %lu\n"
+      @"Note: RDSE70 values only describe this app's active storage.",
+      gameID.length ? gameID : @"(not set)",
+      enabled ? @"YES" : @"NO",
+      userRoot, textureRoot, selectedFolder,
+      selectedExists ? @"YES" : @"NO", regionFallback ? @"YES" : @"NO",
+      (unsigned long)foundDDS, (unsigned long)foundPNG,
+      (unsigned long)recognized, firstFile,
+      expectedFolder, expectedExists ? @"YES" : @"NO",
+      (unsigned long)expectedTextures];
+}
+
+- (void)showTextureDiagnostics {
+  // Large packs can contain thousands of DDS files. Enumerate off the UI
+  // thread, then present the report and Copy Report control on the main thread.
+  __weak EmulationViewController* weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSString* report = [weakSelf replacementTextureDiagnostics];
+    if (!report)
+      return;
+    NSString* savedPath = [NSHomeDirectory()
+        stringByAppendingPathComponent:@"Documents/DolphiniOS-Texture-Diagnostics.txt"];
+    [report writeToFile:savedPath atomically:YES
+               encoding:NSUTF8StringEncoding error:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      EmulationViewController* strongSelf = weakSelf;
+      if (!strongSelf || !strongSelf.view.window)
+        return;
+      UIAlertController* alert = [UIAlertController
+          alertControllerWithTitle:@"Texture Diagnostics" message:report
+               preferredStyle:UIAlertControllerStyleAlert];
+      [alert addAction:[UIAlertAction actionWithTitle:@"Copy Report"
+          style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [UIPasteboard generalPasteboard].string = report;
+      }]];
+      [alert addAction:[UIAlertAction actionWithTitle:@"Close"
+          style:UIAlertActionStyleCancel handler:nil]];
+      [strongSelf presentViewController:alert animated:YES completion:nil];
+    });
+  });
+}
+
+// A read-only snapshot for the black-screen investigation. No settings are changed.
+- (void)showLaunchDiagnostics {
+  Core::State state = Core::GetState(Core::System::GetInstance());
+  NSString* stateName = @"Unknown";
+  switch (state) {
+    case Core::State::Uninitialized: stateName = @"Uninitialized"; break;
+    case Core::State::Paused: stateName = @"Paused"; break;
+    case Core::State::Running: stateName = @"Running"; break;
+    case Core::State::Stopping: stateName = @"Stopping"; break;
+    case Core::State::Starting: stateName = @"Starting"; break;
+  }
+
+  PowerPC::CPUCore cpu = Config::Get(Config::MAIN_CPU_CORE);
+  NSString* cpuName = @"Other";
+  switch (cpu) {
+    case PowerPC::CPUCore::Interpreter: cpuName = @"Interpreter"; break;
+    case PowerPC::CPUCore::CachedInterpreter: cpuName = @"Cached Interpreter"; break;
+    case PowerPC::CPUCore::JITARM64: cpuName = @"ARM64 JIT"; break;
+    case PowerPC::CPUCore::JIT64: cpuName = @"x64 JIT"; break;
+  }
+
+  NSString* gamePath = self.bootParameter.path ?: @"(system menu / IPL)";
+  BOOL readable = self.bootParameter.path ?
+      [[NSFileManager defaultManager] isReadableFileAtPath:self.bootParameter.path] : YES;
+  JitManager* jit = [JitManager shared];
+  NSString* backend = CppToFoundationString(Config::Get(Config::MAIN_GFX_BACKEND));
+  CGSize surface = self.rendererView.bounds.size;
+  NSString* report = [NSString stringWithFormat:
+      @"DolphiniOS launch diagnostics\n"
+      @"Core state: %@\n"
+      @"Boot stage: %@\n"
+      @"Game readable: %@\n"
+      @"Game path: %@\n"
+      @"CPU engine: %@\n"
+      @"JIT acquired: %@\n"
+      @"TXM: %@\n"
+      @"JIT error: %@\n"
+      @"Graphics backend: %@\n"
+      @"Renderer size: %.0f x %.0f\n"
+      @"iOS version: %@\n"
+      @"Safe Boot: %@\n",
+      stateName, [EmulationCoordinator shared].lastBootOutcome ?: @"Unknown",
+      readable ? @"Yes" : @"NO", gamePath, cpuName,
+      jit.acquiredJit ? @"Yes" : @"NO", jit.deviceHasTxm ? @"Yes" : @"No",
+      jit.acquisitionError ?: @"(none)", backend,
+      surface.width, surface.height, [UIDevice currentDevice].systemVersion,
+      self.bootParameter.safeBoot ? @"YES" : @"No"];
+  NSString* path = [NSHomeDirectory()
+      stringByAppendingPathComponent:@"Documents/DolphiniOS-Launch-Diagnostics.txt"];
+  [report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Boot Diagnostics"
+      message:report preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Copy Report"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+    [UIPasteboard generalPasteboard].string = report;
+  }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Close"
+      style:UIAlertActionStyleCancel handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)updateNavigationBar:(bool)hidden {
@@ -263,6 +566,10 @@
 
 - (void)receiveEmulationEndNotification {
   dispatch_async(dispatch_get_main_queue(), ^{
+    [self->_gameUsageTimer invalidate];
+    self->_gameUsageTimer = nil;
+    [self savePendingGamePlaytime];
+    [self restoreSafeBootSettings];
     [UIView animateWithDuration:0.25f animations:^{
       self.rendererView.alpha = 0.0f;
     } completion:^(bool) {

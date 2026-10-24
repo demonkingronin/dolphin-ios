@@ -24,6 +24,10 @@
 #import "HostQueue.h"
 #import "JitManager.h"
 
+@interface EmulationCoordinator ()
+@property (atomic, copy, readwrite) NSString* lastBootOutcome;
+@end
+
 @implementation EmulationCoordinator {
   MTKView* _mtkView;
   CAMetalLayer* _metalLayer;
@@ -52,6 +56,7 @@
     _metalLayer = (CAMetalLayer*)_mtkView.layer;
     
     self.isExternalDisplayConnected = false;
+    self.lastBootOutcome = @"Not started";
   }
   
   return self;
@@ -88,7 +93,20 @@
   }
 }
 
+// Store only the latest diagnostic stage in a new file inside the existing guest.
+// Never touch games, saves, controller profiles or Dolphin's existing INI files.
+- (void)recordBootStage:(NSString*)stage {
+  self.lastBootOutcome = stage;
+  NSString* path = [NSHomeDirectory()
+      stringByAppendingPathComponent:@"Documents/DolphiniOS-Launch-Diagnostics.txt"];
+  NSString* report = [NSString stringWithFormat:
+      @"DolphiniOS launch check\nStage: %@\nRecorded: %@\n", stage, [NSDate date]];
+  [report writeToFile:path atomically:YES
+             encoding:NSUTF8StringEncoding error:nil];
+}
+
 - (void)runEmulationWithBootParameter:(EmulationBootParameter*)bootParameter {
+  [self recordBootStage:@"Emulation view ready; starting worker"];
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     [self emulationLoopWithBootParameter:bootParameter];
   });
@@ -99,7 +117,9 @@
     Core::UndeclareAsHostThread();
   });
 
+  [self recordBootStage:@"Boot worker entered"];
   DOLHostQueueRunSync(^{
+    [self recordBootStage:@"Host queue entered; initializing JIT and graphics"];
     __block WindowSystemInfo wsi;
     wsi.type = WindowSystemType::iOS;
     wsi.render_surface = (__bridge void*)self->_metalLayer;
@@ -127,10 +147,20 @@
       Config::SetBase(Config::GFX_VERTEX_LOADER_TYPE, VertexLoaderType::Software);
     }
     
+    [self recordBootStage:@"Resolving game boot parameters"];
     std::unique_ptr<BootParameters> boot = [bootParameter generateDolphinBootParameter];
-    
-    if (!BootManager::BootCore(system, std::move(boot), wsi)) {
-      PanicAlertFmt("Failed to init core!");
+
+    if (!boot) {
+      [self recordBootStage:@"FAILED: selected game could not be opened"];
+      PanicAlertFmt("Unable to open the selected game!");
+    } else {
+      [self recordBootStage:@"Boot parameters resolved; starting core"];
+      if (!BootManager::BootCore(system, std::move(boot), wsi)) {
+        [self recordBootStage:@"FAILED: emulator core initialization"];
+        PanicAlertFmt("Failed to init core!");
+      } else {
+        [self recordBootStage:@"BootCore succeeded; waiting for video"];
+      }
     }
   });
   

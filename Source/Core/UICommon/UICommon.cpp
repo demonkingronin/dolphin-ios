@@ -82,6 +82,14 @@ static void CreateDumpPath(std::string path)
 
 static void CreateLoadPath(std::string path)
 {
+#ifdef IPHONEOS
+  // Desktop settings copied to an iPhone can contain e.g.
+  // "C:\\Emulazione\\Nintendo Wii\\Load". On iOS this is not an absolute
+  // directory, so it would silently redirect Load/Textures and Riivolution
+  // away from the app's Documents folder. Keep valid POSIX custom paths.
+  if (!path.empty() && path.front() != '/')
+    path = File::GetUserPath(D_USER_IDX) + LOAD_DIR DIR_SEP;
+#endif
   if (!path.empty())
     File::SetUserPath(D_LOAD_IDX, std::move(path));
   File::CreateFullPath(File::GetUserPath(D_HIRESTEXTURES_IDX));

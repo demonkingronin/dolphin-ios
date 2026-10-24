@@ -18,6 +18,12 @@
 #import "MappingGroupEditViewControllerDelegate.h"
 #import "MappingUtil.h"
 
+#include <algorithm>
+#include <chrono>
+#include <memory>
+#include <string>
+#include <vector>
+
 typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
   DOLMappingGroupEditSectionEnableSwitch,
   DOLMappingGroupEditSectionControls,
@@ -26,12 +32,22 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
 };
 
 @interface MappingGroupEditViewController () {
-  NSTimer* _inputTimer;
-  NSLock* _inputLock;
+  // Own and poll the detector exclusively on this serial queue. A dedicated
+  // timer avoids dropping short taps when the main UI thread is busy.
+  dispatch_queue_t _inputDetectionQueue;
+  dispatch_source_t _inputPollingTimer;
   std::unique_ptr<ciface::Core::InputDetector> _inputDetector;
+
   UIAlertController* _inputAlertController;
-  
+  NSIndexPath* _mappingIndexPath;
+  std::string _mappingDefaultDevice;
+  NSUInteger _mappingGeneration;
+  BOOL _mappingActive;
 }
+
+- (void)cancelInputDetection;
+- (void)finishInputDetectionWithExpression:(NSString*)expression
+                                generation:(NSUInteger)generation;
 
 @end
 
@@ -39,22 +55,15 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  
-  self.navigationItem.title = DOLCoreLocalizedString(CppToFoundationString(self.controlGroup->ui_name));
-}
 
-- (void)viewWillAppear:(BOOL)animated {
-  _inputTimer = [NSTimer scheduledTimerWithTimeInterval:1.0f / 60.0f target:self selector:@selector(processMappingButtons) userInfo:nil repeats:true];
+  self.navigationItem.title = DOLCoreLocalizedString(CppToFoundationString(self.controlGroup->ui_name));
+  _inputDetectionQueue = dispatch_queue_create("org.dolphinios.mapping.input-detection",
+                                               DISPATCH_QUEUE_SERIAL);
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
   [super viewWillDisappear:animated];
-  
-  if (_inputTimer != nil)
-  {
-    [_inputTimer invalidate];
-    _inputTimer = nil;
-  }
+  [self cancelInputDetection];
 }
 
 - (void)enableSwitchValueDidChange:(MappingGroupEditEnabledCell*)cell {
@@ -295,8 +304,10 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   if (indexPath.section == DOLMappingGroupEditSectionControls) {
-    // TODO: All devices
-    [self startInputDetectionWithAllDevices:false];
+    // A controller can be connected even when a different (e.g. touchscreen)
+    // device is selected as the default. Detect the actual button pressed and
+    // qualify its device when it differs from the profile's default.
+    [self startInputDetectionWithAllDevices:true];
   } else {
     [tableView deselectRowAtIndexPath:indexPath animated:true];
   }
@@ -347,77 +358,170 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
 
 #pragma mark - Input detection
 
+// All of the UI state below is owned by the main queue. Detector creation, polling,
+// and destruction happen only on _inputDetectionQueue, preventing lock-related UI freezes.
 - (void)startInputDetectionWithAllDevices:(bool)allDevices {
-  _inputAlertController = [UIAlertController alertControllerWithTitle:DOLCoreLocalizedString(@"[ Press Now ]") message:nil preferredStyle:UIAlertControllerStyleAlert];
-  
-  [self presentViewController:_inputAlertController animated:true completion:^{
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      [self->_inputLock lock];
-      
-      self->_inputDetector = std::make_unique<ciface::Core::InputDetector>();
-      
-      std::vector<std::string> devices;
-      
-      if (allDevices) {
-        devices = g_controller_interface.GetAllDeviceStrings();
-      } else {
-        devices = {self.controller->GetDefaultDevice().ToString()};
+  if (_mappingActive)
+    return;
+
+  NSIndexPath* selectedRow = self.tableView.indexPathForSelectedRow;
+  if (selectedRow == nil || selectedRow.section != DOLMappingGroupEditSectionControls)
+    return;
+
+  _mappingIndexPath = [selectedRow copy];
+  _mappingDefaultDevice = self.controller->GetDefaultDevice().ToString();
+  _mappingActive = YES;
+  const NSUInteger generation = ++_mappingGeneration;
+  const std::string defaultDevice = _mappingDefaultDevice;
+
+  _inputAlertController = [UIAlertController
+      alertControllerWithTitle:DOLCoreLocalizedString(@"[ Press Now ]")
+                       message:nil
+                preferredStyle:UIAlertControllerStyleAlert];
+  __weak MappingGroupEditViewController* weakSelf = self;
+  [_inputAlertController addAction:[UIAlertAction
+      actionWithTitle:DOLCoreLocalizedString(@"Cancel")
+                style:UIAlertActionStyleCancel
+              handler:^(__unused UIAlertAction* action) {
+                [weakSelf cancelInputDetection];
+              }]];
+
+  // Arm detection before displaying the alert. Otherwise the first physical
+  // button press can happen while the alert animates and is silently lost.
+  dispatch_async(_inputDetectionQueue, ^{
+    // A freshly reconnected MFi controller can have a different device
+    // qualifier from the one stored in the selected emulated controller.
+    // Fall back to every currently connected device rather than silently
+    // finishing detection with zero available inputs.
+    const auto connectedDevices = g_controller_interface.GetAllDeviceStrings();
+    std::vector<std::string> devices;
+    const bool selectedConnected =
+        std::find(connectedDevices.begin(), connectedDevices.end(), defaultDevice) !=
+        connectedDevices.end();
+    if (allDevices || !selectedConnected)
+      devices = connectedDevices;
+    else
+      devices.push_back(defaultDevice);
+
+    self->_inputDetector = std::make_unique<ciface::Core::InputDetector>();
+    self->_inputDetector->Start(g_controller_interface, devices);
+
+    // Poll independently of UIKit's main run loop; a busy UI previously
+    // stalled sampling and missed fast presses intermittently.
+    self->_inputPollingTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self->_inputDetectionQueue);
+    dispatch_source_set_timer(self->_inputPollingTimer, DISPATCH_TIME_NOW,
+                              NSEC_PER_SEC / 240, NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(self->_inputPollingTimer, ^{
+      if (!self->_inputDetector)
+        return;
+
+      constexpr auto initialTime = std::chrono::seconds(8);
+      constexpr auto maximumTime = std::chrono::seconds(10);
+
+      // InputDetector reports a press as soon as it crosses the threshold.
+      // Waiting for its release made short taps appear unreliable on iOS,
+      // especially when the controller state updated between UI frames.
+      self->_inputDetector->Update(initialTime, std::chrono::milliseconds(0), maximumTime);
+      const bool hasPress = !self->_inputDetector->GetResults().empty();
+      if (!hasPress && !self->_inputDetector->IsComplete())
+        return;
+
+      std::string expression;
+      if (hasPress) {
+        auto results = self->_inputDetector->TakeResults();
+        // A single mapping should bind one physical control, not accumulate
+        // an unintended chord of several controls when buttons overlap.
+        results.resize(1);
+        ciface::Core::DeviceQualifier qualifier;
+        qualifier.FromString(defaultDevice);
+        expression = ciface::MappingCommon::BuildExpression(
+            results, qualifier, ciface::MappingCommon::Quote::On);
       }
-      
-      self->_inputDetector->Start(g_controller_interface, devices);
-      
-      [self->_inputLock unlock];
+
+      dispatch_source_cancel(self->_inputPollingTimer);
+      self->_inputPollingTimer = nil;
+      self->_inputDetector.reset();
+
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self finishInputDetectionWithExpression:CppToFoundationString(expression)
+                                     generation:generation];
+      });
     });
-  }];
+    dispatch_resume(self->_inputPollingTimer);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      // A stale or cancelled detector must never present a new alert.
+      if (!self->_mappingActive || generation != self->_mappingGeneration)
+        return;
+      [self presentViewController:self->_inputAlertController animated:YES completion:nil];
+    });
+  });
 }
 
-- (void)processMappingButtons {
-  [self->_inputLock lock];
-  
-  if (!_inputDetector) {
+// Cancelling never changes the existing mapping. The cleanup is enqueued behind
+// any active detector operation, so the UI never waits for input/device locks.
+- (void)cancelInputDetection {
+  if (!_mappingActive)
     return;
-  }
-  
-  constexpr auto initial_time = std::chrono::seconds(3);
-  constexpr auto confirmation_time = std::chrono::milliseconds(0);
-  constexpr auto maximum_time = std::chrono::seconds(5);
-  
-  _inputDetector->Update(initial_time, confirmation_time, maximum_time);
-  
-  if (!_inputDetector->IsComplete()) {
-    return;
-  }
-  
-  auto results = _inputDetector->TakeResults();
-  
-  if (ciface::MappingCommon::ContainsCompleteDetection(results)) {
-    std::string expression = BuildExpression(results, self.controller->GetDefaultDevice(), ciface::MappingCommon::Quote::On);
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-      NSIndexPath* indexPath = self.tableView.indexPathForSelectedRow;
-      
-      [self->_inputAlertController dismissViewControllerAnimated:true completion:^{
-        if (!expression.empty()) {
-          auto& controlRef = self.controlGroup->controls[indexPath.row]->control_ref;
-          
-          controlRef->SetExpression(expression);
-          self.controller->UpdateSingleControlReference(g_controller_interface, controlRef.get());
-          
-          [self.delegate controlGroupDidChange:self];
-          
-          [self updateControlCell:[self.tableView cellForRowAtIndexPath:indexPath] withExpression:expression];
-        } else {
-          UIAlertController* noInputAlert = [UIAlertController alertControllerWithTitle:@"No input was detected." message:nil preferredStyle:UIAlertControllerStyleAlert];
-          [noInputAlert addAction:[UIAlertAction actionWithTitle:DOLCoreLocalizedString(@"OK") style:UIAlertActionStyleDefault handler:nil]];
-          
-          [self presentViewController:noInputAlert animated:true completion:nil];
-        }
-        
-        [self.tableView deselectRowAtIndexPath:indexPath animated:true];
-      }];
-    });
-  }
-  
+
+  _mappingActive = NO;
+  ++_mappingGeneration;
+  NSIndexPath* selectedRow = _mappingIndexPath;
+  _mappingIndexPath = nil;
+  _mappingDefaultDevice.clear();
+
+  UIAlertController* alert = _inputAlertController;
+  _inputAlertController = nil;
+
+  dispatch_async(_inputDetectionQueue, ^{
+    if (self->_inputPollingTimer) {
+      dispatch_source_cancel(self->_inputPollingTimer);
+      self->_inputPollingTimer = nil;
+    }
+    self->_inputDetector.reset();
+  });
+
+  if (selectedRow != nil)
+    [self.tableView deselectRowAtIndexPath:selectedRow animated:YES];
+  [alert dismissViewControllerAnimated:YES completion:nil];
 }
+
+// Called on the main queue only after a background detection has finished.
+// A session token prevents stale queued results from applying to another row.
+- (void)finishInputDetectionWithExpression:(NSString*)expression
+                                generation:(NSUInteger)generation {
+  if (!_mappingActive || generation != _mappingGeneration)
+    return;
+
+  NSIndexPath* selectedRow = _mappingIndexPath;
+  _mappingActive = NO;
+  ++_mappingGeneration;
+  _mappingIndexPath = nil;
+  _mappingDefaultDevice.clear();
+
+  UIAlertController* alert = _inputAlertController;
+  _inputAlertController = nil;
+
+  if (expression.length > 0 && selectedRow != nil &&
+      selectedRow.section == DOLMappingGroupEditSectionControls &&
+      selectedRow.row < (NSInteger)self.controlGroup->controls.size()) {
+    const std::string mappedExpression = FoundationToCppString(expression);
+    auto& controlRef = self.controlGroup->controls[selectedRow.row]->control_ref;
+    controlRef->SetExpression(mappedExpression);
+    self.controller->UpdateSingleControlReference(g_controller_interface, controlRef.get());
+
+    [self.delegate controlGroupDidChange:self];
+    MappingGroupEditControlCell* cell = [self.tableView cellForRowAtIndexPath:selectedRow];
+    [self updateControlCell:cell withExpression:mappedExpression];
+  }
+
+  if (selectedRow != nil)
+    [self.tableView deselectRowAtIndexPath:selectedRow animated:YES];
+  // An empty result (no controller, timeout, or unreleased input) simply
+  // closes the alert and preserves the previous binding.
+  [alert dismissViewControllerAnimated:YES completion:nil];
+}
+
 
 @end

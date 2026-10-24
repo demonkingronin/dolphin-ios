@@ -186,7 +186,7 @@
         <!--General-->
         <scene sceneID="0US-Jm-r2e">
             <objects>
-                <tableViewController id="zIH-Ai-3Xl" customClass="ConfigGeneralViewController" sceneMemberID="viewController">
+                <tableViewController id="zIH-Ai-3Xl" storyboardIdentifier="SearchConfigGeneral" customClass="ConfigGeneralViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="7XG-pX-B0J">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -493,7 +493,7 @@
         <!--Interface-->
         <scene sceneID="095-6V-TjZ">
             <objects>
-                <tableViewController id="pzm-hV-r0A" customClass="ConfigInterfaceViewController" sceneMemberID="viewController">
+                <tableViewController id="pzm-hV-r0A" storyboardIdentifier="SearchConfigInterface" customClass="ConfigInterfaceViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="aSD-rC-CpQ">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -664,7 +664,7 @@
         <!--Audio-->
         <scene sceneID="V2L-IR-mLy">
             <objects>
-                <tableViewController id="LK6-kj-cso" customClass="ConfigSoundViewController" sceneMemberID="viewController">
+                <tableViewController id="LK6-kj-cso" storyboardIdentifier="SearchConfigAudio" customClass="ConfigSoundViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="yWF-n9-VMl">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -942,7 +942,7 @@
         <!--GameCube-->
         <scene sceneID="qJv-wJ-PFg">
             <objects>
-                <tableViewController id="QVW-2D-bk1" customClass="ConfigGameCubeViewController" sceneMemberID="viewController">
+                <tableViewController id="QVW-2D-bk1" storyboardIdentifier="SearchConfigGameCube" customClass="ConfigGameCubeViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="P2F-5t-K1F">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -1189,7 +1189,7 @@
         <!--Wii-->
         <scene sceneID="9ya-u7-I3f">
             <objects>
-                <tableViewController id="YCb-53-yzC" customClass="ConfigWiiViewController" sceneMemberID="viewController">
+                <tableViewController id="YCb-53-yzC" storyboardIdentifier="SearchConfigWii" customClass="ConfigWiiViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="4ye-RE-jEk">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -2200,7 +2200,7 @@
         <!--Advanced-->
         <scene sceneID="psz-gw-BLB">
             <objects>
-                <tableViewController id="TFH-fa-6z1" customClass="ConfigAdvancedViewController" sceneMemberID="viewController">
+                <tableViewController id="TFH-fa-6z1" storyboardIdentifier="SearchConfigAdvanced" customClass="ConfigAdvancedViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="XmA-R3-FLk">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>

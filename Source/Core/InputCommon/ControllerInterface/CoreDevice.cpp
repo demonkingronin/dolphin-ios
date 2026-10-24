@@ -353,6 +353,19 @@ struct InputDetector::Impl
     {
       const auto new_state = input->GetState();
 
+      // If a button was already held when detection began, its initial state
+      // used to stay high for the entire session. Every later press then
+      // scored as zero and could never be recognized. Rebaseline once the
+      // input is released so the next press can be captured normally.
+      if (initial_state > INPUT_DETECT_THRESHOLD &&
+          new_state < (1 - INPUT_DETECT_THRESHOLD))
+      {
+        initial_state = new_state;
+        last_state = new_state;
+        is_ready = true;
+        stats.Clear();
+      }
+
       if (!is_ready && new_state < (1 - INPUT_DETECT_THRESHOLD))
       {
         last_state = new_state;

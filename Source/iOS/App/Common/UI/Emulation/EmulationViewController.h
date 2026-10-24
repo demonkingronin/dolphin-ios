@@ -23,6 +23,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)updateNavigationBar:(bool)hidden;
 
+// Available from the existing in-game gear menu; neither adds an overlay.
+- (void)showLaunchDiagnostics;
+- (void)showTextureDiagnostics;
+
 @end
 
 NS_ASSUME_NONNULL_END

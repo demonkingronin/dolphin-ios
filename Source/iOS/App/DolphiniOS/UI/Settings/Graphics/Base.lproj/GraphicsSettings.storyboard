@@ -136,7 +136,7 @@
         <!--General-->
         <scene sceneID="ABV-MM-Tfj">
             <objects>
-                <tableViewController id="fOY-fX-J3h" customClass="GraphicsGeneralViewController" sceneMemberID="viewController">
+                <tableViewController id="fOY-fX-J3h" storyboardIdentifier="SearchGraphicsGeneral" customClass="GraphicsGeneralViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="Acb-B2-y4h">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -653,7 +653,7 @@
         <!--Enhancements-->
         <scene sceneID="IvS-fa-54I">
             <objects>
-                <tableViewController id="39S-qQ-ucI" customClass="GraphicsEnhancementsViewController" sceneMemberID="viewController">
+                <tableViewController id="39S-qQ-ucI" storyboardIdentifier="SearchGraphicsEnhancements" customClass="GraphicsEnhancementsViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="FXO-bV-mSU">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -1314,7 +1314,7 @@
         <!--Hacks-->
         <scene sceneID="SCH-vg-2gS">
             <objects>
-                <tableViewController id="vXq-1D-Nwr" customClass="GraphicsHacksViewController" sceneMemberID="viewController">
+                <tableViewController id="vXq-1D-Nwr" storyboardIdentifier="SearchGraphicsHacks" customClass="GraphicsHacksViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="Nis-8j-uVf">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -1827,7 +1827,7 @@
         <!--Advanced-->
         <scene sceneID="m8H-iJ-sZ5">
             <objects>
-                <tableViewController id="l8Z-pf-7Jv" customClass="GraphicsAdvancedViewController" sceneMemberID="viewController">
+                <tableViewController id="l8Z-pf-7Jv" storyboardIdentifier="SearchGraphicsAdvanced" customClass="GraphicsAdvancedViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="insetGrouped" separatorStyle="default" rowHeight="-1" estimatedRowHeight="-1" sectionHeaderHeight="18" estimatedSectionHeaderHeight="-1" sectionFooterHeight="18" estimatedSectionFooterHeight="-1" id="q9J-nF-8Sg">
                         <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>

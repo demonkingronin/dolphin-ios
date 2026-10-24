@@ -18,7 +18,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) EmulationBootType bootType;
 @property (nonatomic) NSString* path;
 @property (nonatomic) NSString* secondPath;
+// Library game being launched, including when a separate mod profile is selected.
+@property (nonatomic, nullable) NSString* usageGamePath;
 @property (nonatomic) bool isNKit;
+// One-time diagnostic launch; never persisted to a game or global INI.
+@property (nonatomic) bool safeBoot;
 @property (nonatomic) DiscIO::Region iplRegion;
 
 - (std::unique_ptr<BootParameters>) generateDolphinBootParameter;
