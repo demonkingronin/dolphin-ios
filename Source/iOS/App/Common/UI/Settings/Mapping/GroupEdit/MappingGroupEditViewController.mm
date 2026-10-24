@@ -303,8 +303,10 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   if (indexPath.section == DOLMappingGroupEditSectionControls) {
-    // TODO: All devices
-    [self startInputDetectionWithAllDevices:false];
+    // A controller can be connected even when a different (e.g. touchscreen)
+    // device is selected as the default. Detect the actual button pressed and
+    // qualify its device when it differs from the profile's default.
+    [self startInputDetectionWithAllDevices:true];
   } else {
     [tableView deselectRowAtIndexPath:indexPath animated:true];
   }
@@ -407,16 +409,22 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
         return;
 
       constexpr auto initialTime = std::chrono::seconds(8);
-      constexpr auto confirmationTime = std::chrono::milliseconds(0);
       constexpr auto maximumTime = std::chrono::seconds(10);
 
-      self->_inputDetector->Update(initialTime, confirmationTime, maximumTime);
-      if (!self->_inputDetector->IsComplete())
+      // InputDetector reports a press as soon as it crosses the threshold.
+      // Waiting for its release made short taps appear unreliable on iOS,
+      // especially when the controller state updated between UI frames.
+      self->_inputDetector->Update(initialTime, std::chrono::milliseconds(0), maximumTime);
+      const bool hasPress = !self->_inputDetector->GetResults().empty();
+      if (!hasPress && !self->_inputDetector->IsComplete())
         return;
 
       std::string expression;
-      auto results = self->_inputDetector->TakeResults();
-      if (ciface::MappingCommon::ContainsCompleteDetection(results)) {
+      if (hasPress) {
+        auto results = self->_inputDetector->TakeResults();
+        // A single mapping should bind one physical control, not accumulate
+        // an unintended chord of several controls when buttons overlap.
+        results.resize(1);
         ciface::Core::DeviceQualifier qualifier;
         qualifier.FromString(defaultDevice);
         expression = ciface::MappingCommon::BuildExpression(
