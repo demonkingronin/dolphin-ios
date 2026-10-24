@@ -26,6 +26,7 @@
 
 #import "Common/IniFile.h"
 #import "DiscIO/GameModDescriptor.h"
+#import "DiscIO/RiivolutionParser.h"
 
 
 #pragma mark - Per-game settings (uses Dolphin's existing revision-specific GameINI)
@@ -653,20 +654,24 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
     problem = @"This is not a supported Dolphin game-mod descriptor JSON.";
   } else if (!descriptor->riivolution || descriptor->riivolution->patches.empty()) {
     problem = @"This profile contains no Riivolution patches.";
-  } else {
-    UICommon::GameFile sourceGame(descriptor->base_file);
-    if (!sourceGame.IsValid() ||
-        sourceGame.GetGameID() != game.gameFile->GetGameID() ||
-        sourceGame.GetRevision() != game.gameFile->GetRevision()) {
-      problem = @"This profile targets a different game or revision.";
-    }
   }
 
   if (problem == nil) {
+    // JSON descriptors can originate on another device, so their base-file
+    // path may differ. The user selected the target game in the library.
+    // Validate the actual XML game filters before re-targeting the descriptor.
     for (const auto& patch : descriptor->riivolution->patches) {
       if (!File::Exists(patch.xml) ||
-          ![[NSFileManager defaultManager] fileExistsAtPath:CppToFoundationString(patch.root)]) {
-        problem = @"Required Riivolution XML or patch root files are missing. Import those assets into DolphiniOS first.";
+          !File::Exists(patch.root)) {
+        problem = @"Required Riivolution XML or patch assets are missing. Put those files in Dolphin's accessible storage, then import the JSON.";
+        break;
+      }
+      auto parsed = DiscIO::Riivolution::ParseFile(patch.xml);
+      if (!parsed ||
+          !parsed->IsValidForGame(game.gameFile->GetGameID(),
+                                  game.gameFile->GetRevision(),
+                                  game.gameFile->GetDiscNumber())) {
+        problem = @"A Riivolution XML file is invalid or targets another game/revision.";
         break;
       }
     }
