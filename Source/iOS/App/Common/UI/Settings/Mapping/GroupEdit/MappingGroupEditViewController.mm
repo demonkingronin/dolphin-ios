@@ -31,10 +31,10 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
 };
 
 @interface MappingGroupEditViewController () {
-  NSTimer* _inputTimer;
-  // The detector is owned and accessed exclusively on this serial queue.
-  // No detector work or blocking lock acquisition takes place on the UI thread.
+  // Own and poll the detector exclusively on this serial queue. A dedicated
+  // timer avoids dropping short taps when the main UI thread is busy.
   dispatch_queue_t _inputDetectionQueue;
+  dispatch_source_t _inputPollingTimer;
   std::unique_ptr<ciface::Core::InputDetector> _inputDetector;
 
   UIAlertController* _inputAlertController;
@@ -42,7 +42,6 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
   std::string _mappingDefaultDevice;
   NSUInteger _mappingGeneration;
   BOOL _mappingActive;
-  BOOL _inputTickPending;
 }
 
 - (void)cancelInputDetection;
@@ -61,26 +60,9 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
                                                DISPATCH_QUEUE_SERIAL);
 }
 
-- (void)viewWillAppear:(BOOL)animated {
-  [super viewWillAppear:animated];
-
-  if (_inputTimer == nil) {
-    _inputTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
-                                                  target:self
-                                                selector:@selector(processMappingButtons)
-                                                userInfo:nil
-                                                 repeats:YES];
-  }
-}
-
 - (void)viewWillDisappear:(BOOL)animated {
   [super viewWillDisappear:animated];
-
   [self cancelInputDetection];
-  if (_inputTimer != nil) {
-    [_inputTimer invalidate];
-    _inputTimer = nil;
-  }
 }
 
 - (void)enableSwitchValueDidChange:(MappingGroupEditEnabledCell*)cell {
@@ -401,23 +383,64 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
                 [weakSelf cancelInputDetection];
               }]];
 
-  [self presentViewController:_inputAlertController animated:YES completion:^{
-    // The user may navigate away or cancel while the alert is animating.
-    if (!self->_mappingActive || generation != self->_mappingGeneration)
-      return;
+  // Arm detection before displaying the alert. Otherwise the first physical
+  // button press can happen while the alert animates and is silently lost.
+  dispatch_async(_inputDetectionQueue, ^{
+    std::vector<std::string> devices;
+    if (allDevices) {
+      devices = g_controller_interface.GetAllDeviceStrings();
+    } else {
+      devices.push_back(defaultDevice);
+    }
 
-    dispatch_async(self->_inputDetectionQueue, ^{
-      std::vector<std::string> devices;
-      if (allDevices) {
-        devices = g_controller_interface.GetAllDeviceStrings();
-      } else {
-        devices.push_back(defaultDevice);
+    self->_inputDetector = std::make_unique<ciface::Core::InputDetector>();
+    self->_inputDetector->Start(g_controller_interface, devices);
+
+    // Poll independently of UIKit's main run loop; a busy UI previously
+    // stalled sampling and missed fast presses intermittently.
+    self->_inputPollingTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self->_inputDetectionQueue);
+    dispatch_source_set_timer(self->_inputPollingTimer, DISPATCH_TIME_NOW,
+                              NSEC_PER_SEC / 120, NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(self->_inputPollingTimer, ^{
+      if (!self->_inputDetector)
+        return;
+
+      constexpr auto initialTime = std::chrono::seconds(8);
+      constexpr auto confirmationTime = std::chrono::milliseconds(0);
+      constexpr auto maximumTime = std::chrono::seconds(10);
+
+      self->_inputDetector->Update(initialTime, confirmationTime, maximumTime);
+      if (!self->_inputDetector->IsComplete())
+        return;
+
+      std::string expression;
+      auto results = self->_inputDetector->TakeResults();
+      if (ciface::MappingCommon::ContainsCompleteDetection(results)) {
+        ciface::Core::DeviceQualifier qualifier;
+        qualifier.FromString(defaultDevice);
+        expression = ciface::MappingCommon::BuildExpression(
+            results, qualifier, ciface::MappingCommon::Quote::On);
       }
 
-      self->_inputDetector = std::make_unique<ciface::Core::InputDetector>();
-      self->_inputDetector->Start(g_controller_interface, devices);
+      dispatch_source_cancel(self->_inputPollingTimer);
+      self->_inputPollingTimer = nil;
+      self->_inputDetector.reset();
+
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self finishInputDetectionWithExpression:CppToFoundationString(expression)
+                                     generation:generation];
+      });
     });
-  }];
+    dispatch_resume(self->_inputPollingTimer);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      // A stale or cancelled detector must never present a new alert.
+      if (!self->_mappingActive || generation != self->_mappingGeneration)
+        return;
+      [self presentViewController:self->_inputAlertController animated:YES completion:nil];
+    });
+  });
 }
 
 // Cancelling never changes the existing mapping. The cleanup is enqueued behind
@@ -436,6 +459,10 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
   _inputAlertController = nil;
 
   dispatch_async(_inputDetectionQueue, ^{
+    if (self->_inputPollingTimer) {
+      dispatch_source_cancel(self->_inputPollingTimer);
+      self->_inputPollingTimer = nil;
+    }
     self->_inputDetector.reset();
   });
 
@@ -480,48 +507,5 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
   [alert dismissViewControllerAnimated:YES completion:nil];
 }
 
-- (void)processMappingButtons {
-  if (!_mappingActive || _inputTickPending)
-    return;
-
-  _inputTickPending = YES;
-  const NSUInteger generation = _mappingGeneration;
-  const std::string defaultDeviceString = _mappingDefaultDevice;
-
-  // Serial background polling keeps the main thread free even if the device
-  // backend is slow. Only one poll may be outstanding at any time.
-  dispatch_async(_inputDetectionQueue, ^{
-    BOOL finished = NO;
-    std::string expression;
-
-    if (self->_inputDetector) {
-      constexpr auto initialTime = std::chrono::seconds(3);
-      constexpr auto confirmationTime = std::chrono::milliseconds(0);
-      constexpr auto maximumTime = std::chrono::seconds(5);
-
-      self->_inputDetector->Update(initialTime, confirmationTime, maximumTime);
-      finished = self->_inputDetector->IsComplete();
-
-      if (finished) {
-        auto results = self->_inputDetector->TakeResults();
-        if (ciface::MappingCommon::ContainsCompleteDetection(results)) {
-          ciface::Core::DeviceQualifier qualifier;
-          qualifier.FromString(defaultDeviceString);
-          expression = ciface::MappingCommon::BuildExpression(
-              results, qualifier, ciface::MappingCommon::Quote::On);
-        }
-        self->_inputDetector.reset();
-      }
-    }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-      self->_inputTickPending = NO;
-      if (finished && self->_mappingActive && generation == self->_mappingGeneration) {
-        [self finishInputDetectionWithExpression:CppToFoundationString(expression)
-                                     generation:generation];
-      }
-    });
-  });
-}
 
 @end
