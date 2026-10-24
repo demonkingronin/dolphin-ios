@@ -3,12 +3,14 @@ name: Build iOS IPA
 # Build only when explicitly requested. Avoids repeated expensive rebuilds
 # while preparing a combined test with the user's existing LiveContainer data.
 on:
-  # One combined test build after all features were committed.
-  # Future source fixes on this branch also rebuild automatically.
-  push:
-    branches:
-      - feature/controller-mapping-fix
+  # A replacement IPA must use the exact identifier of the EXISTING installed app.
+  # Avoid building an IPA that silently creates a separate LiveContainer guest.
   workflow_dispatch:
+    inputs:
+      existing_bundle_id:
+        description: "Exact CFBundleIdentifier of existing DolphiniOS installation"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,9 +24,7 @@ jobs:
       XCODE_PROJECT: Source/iOS/App/DolphiniOS.xcodeproj
       XCODE_DERIVED_DATA: ${{ github.workspace }}/build-Xcode
       ARCHIVE_PATH: ${{ github.workspace }}/archives/NonJailbroken.xcarchive
-      # Preserve the original non-jailbroken DolphiniOS app identifier.
-      # Verify this matches the app in LiveContainer BEFORE replacement.
-      DOL_PBID_ORGANIZATION_IDENTIFIER: me.oatmealdome
+      TARGET_BUNDLE_ID: ${{ inputs.existing_bundle_id }}
       DOL_BUILD_SOURCE: development
 
     steps:
@@ -59,6 +59,17 @@ jobs:
         run: |
           brew install cmake ninja bartycrouch
 
+      - name: Validate existing app identifier
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          bundle_id = os.environ.get("TARGET_BUNDLE_ID", "")
+          if not re.fullmatch(r"[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+", bundle_id):
+              raise SystemExit("Use the exact CFBundleIdentifier from the existing installation.")
+          print(f"Replacement bundle ID: {bundle_id}")
+          PY
+
       - name: Build non-jailbroken app
         run: |
           mkdir -p archives products
@@ -70,9 +81,18 @@ jobs:
             -scheme "DiOS (NJB)" \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
-            DOL_PBID_ORGANIZATION_IDENTIFIER="$DOL_PBID_ORGANIZATION_IDENTIFIER" \
+            PRODUCT_BUNDLE_IDENTIFIER="$TARGET_BUNDLE_ID" \
             DOL_BUILD_SOURCE="$DOL_BUILD_SOURCE" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Verify built IPA app identity
+        run: |
+          ACTUAL_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$ARCHIVE_PATH/Products/Applications/DolphiniOS.app/Info.plist")"
+          echo "Built CFBundleIdentifier: $ACTUAL_BUNDLE_ID"
+          if [ "$ACTUAL_BUNDLE_ID" != "$TARGET_BUNDLE_ID" ]; then
+            echo "::error::Built bundle ID does not match the original installed app ID."
+            exit 1
+          fi
 
       - name: Package IPA
         run: |
