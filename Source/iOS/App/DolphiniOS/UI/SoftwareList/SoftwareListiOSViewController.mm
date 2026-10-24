@@ -514,8 +514,65 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
 
 @implementation SoftwareListiOSViewController {
   DOLSoftwareListDocumentPickerType _pickerType;
+  UIBarButtonItem* _sortButton;
   NSURL* _openedUrl;
   GameFilePtrWrapper* _profileImportGame;
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  // Keep Dolphin's original Open and Add buttons, and use the same native iOS
+  // translucent UIMenu UI for sorting game covers.
+  UIBarButtonItem* addButton = self.navigationItem.rightBarButtonItem;
+  _sortButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal.decrease"]
+                                                style:UIBarButtonItemStylePlain target:nil action:nil];
+  _sortButton.accessibilityLabel = @"Sort Games";
+  _sortButton.menu = [self gameSortingMenu];
+  self.navigationItem.rightBarButtonItems = addButton ? @[addButton, _sortButton] : @[_sortButton];
+}
+
+- (UIMenu*)gameSortingMenu {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* selected = [defaults stringForKey:@"DOLSoftwareSortKey"] ?: @"recent";
+  BOOL ascending = [defaults objectForKey:@"DOLSoftwareSortAscending"] ?
+      [defaults boolForKey:@"DOLSoftwareSortAscending"] : NO;
+
+  NSMutableArray<UIMenuElement*>* sortChoices = [NSMutableArray array];
+  for (NSDictionary* choice in @[
+      @{@"key": @"recent", @"title": @"Recently Played"},
+      @{@"key": @"name", @"title": @"Name"},
+      @{@"key": @"time", @"title": @"Time Played"}]) {
+    NSString* key = choice[@"key"];
+    UIAction* action = [UIAction actionWithTitle:choice[@"title"] image:nil identifier:nil handler:^(__unused UIAction* selectedAction) {
+      [[NSUserDefaults standardUserDefaults] setObject:key forKey:@"DOLSoftwareSortKey"];
+      [self sortGameFiles];
+      [self.collectionView reloadData];
+      self->_sortButton.menu = [self gameSortingMenu];
+    }];
+    action.state = [key isEqualToString:selected] ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [sortChoices addObject:action];
+  }
+
+  NSMutableArray<UIMenuElement*>* orderChoices = [NSMutableArray array];
+  for (NSNumber* number in @[@YES, @NO]) {
+    BOOL isAscending = number.boolValue;
+    UIAction* action = [UIAction actionWithTitle:isAscending ? @"Ascending" : @"Descending"
+                                          image:nil identifier:nil handler:^(__unused UIAction* selectedAction) {
+      [[NSUserDefaults standardUserDefaults] setBool:isAscending forKey:@"DOLSoftwareSortAscending"];
+      [self sortGameFiles];
+      [self.collectionView reloadData];
+      self->_sortButton.menu = [self gameSortingMenu];
+    }];
+    action.state = isAscending == ascending ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [orderChoices addObject:action];
+  }
+
+  return [UIMenu menuWithChildren:@[
+      [UIMenu menuWithTitle:@"Sort By" image:nil identifier:nil
+                   options:UIMenuOptionsDisplayInline children:sortChoices],
+      [UIMenu menuWithTitle:@"Order" image:nil identifier:nil
+                   options:UIMenuOptionsDisplayInline children:orderChoices]
+  ]];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
