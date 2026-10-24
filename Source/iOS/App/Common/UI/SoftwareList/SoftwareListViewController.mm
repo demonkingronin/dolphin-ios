@@ -122,6 +122,12 @@
 
 - (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper
    withLaunchProfile:(NSString*)profilePath {
+  [self loadGameFile:gameFileWrapper withLaunchProfile:profilePath safeBoot:NO];
+}
+
+- (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper
+   withLaunchProfile:(NSString*)profilePath
+            safeBoot:(BOOL)safeBoot {
   std::shared_ptr<const UICommon::GameFile> game = gameFileWrapper.gameFile;
   if (profilePath.length > 0) {
     auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(profilePath));
@@ -191,6 +197,7 @@
   _bootParameter.secondPath = profilePath.length > 0 ? nil :
       (second_game != nullptr ? CppToFoundationString(second_game->GetFilePath()) : nil);
   _bootParameter.isNKit = gameFileWrapper.gameFile->IsNKit();
+  _bootParameter.safeBoot = safeBoot;
   
   [self performSegueWithIdentifier:@"emulation" sender:nil];
 }

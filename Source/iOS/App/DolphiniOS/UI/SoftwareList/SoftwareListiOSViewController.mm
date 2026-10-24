@@ -990,6 +990,12 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
       style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
         [self loadGameFile:game withLaunchProfile:nil];
       }]];
+  [picker addAction:[UIAlertAction actionWithTitle:@"Safe Boot (Troubleshoot Black Screen)"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        // One launch: no patch profile, cached interpreter, stock backend and
+        // conservative startup settings. Existing config and saves stay intact.
+        [self loadGameFile:game withLaunchProfile:nil safeBoot:YES];
+      }]];
   for (NSString* path in profiles) {
     [picker addAction:[UIAlertAction actionWithTitle:
         [@"Play: " stringByAppendingString:[self profileLabel:path]]

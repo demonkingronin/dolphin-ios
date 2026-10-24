@@ -19,6 +19,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) NSString* path;
 @property (nonatomic) NSString* secondPath;
 @property (nonatomic) bool isNKit;
+// One-time diagnostic launch; never persisted to a game or global INI.
+@property (nonatomic) bool safeBoot;
 @property (nonatomic) DiscIO::Region iplRegion;
 
 - (std::unique_ptr<BootParameters>) generateDolphinBootParameter;

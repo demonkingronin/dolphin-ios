@@ -21,6 +21,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reloadGameFiles;
 - (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper;
 - (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper withLaunchProfile:(nullable NSString*)profilePath;
+- (void)loadGameFile:(GameFilePtrWrapper*)gameFileWrapper withLaunchProfile:(nullable NSString*)profilePath safeBoot:(BOOL)safeBoot;
 - (void)loadGameCubeIPLForRegion:(DiscIO::Region)region;
 
 - (void)performSegueForWiiUpdateWithSource:(NSString*)source isOnline:(bool)online;

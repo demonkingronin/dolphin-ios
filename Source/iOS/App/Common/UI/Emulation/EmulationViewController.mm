@@ -7,6 +7,13 @@
 
 #import <GameController/GameController.h>
 
+#import "Common/Config/Config.h"
+
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
 #import "Core/ConfigManager.h"
 #import "Core/Config/MainSettings.h"
 #import "Core/Core.h"
@@ -28,12 +35,18 @@
 
 @implementation EmulationViewController {
   bool _didStartEmulation;
+  bool _safeBootSettingsApplied;
+  std::map<Config::Location, std::optional<std::string>> _previousSafeBootSettings;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
   
   _didStartEmulation = false;
+  // This test changes only the temporary CurrentRun configuration layer.
+  // It does not touch user's existing global or per-game INI files.
+  if (self.bootParameter.safeBoot)
+    [self applySafeBootSettings];
   
   [[EmulationCoordinator shared] registerMainDisplayView:self.rendererView];
   
@@ -157,6 +170,58 @@
   }];
 }
 
+- (void)applySafeBootSettings {
+  if (_safeBootSettingsApplied)
+    return;
+  auto layer = Config::GetLayer(Config::LayerType::CurrentRun);
+  if (!layer)
+    return;
+
+  const std::vector<Config::Location> locations = {
+      Config::MAIN_CPU_CORE.GetLocation(),
+      Config::MAIN_GFX_BACKEND.GetLocation(),
+      Config::MAIN_ENABLE_CHEATS.GetLocation(),
+      Config::MAIN_SKIP_IPL.GetLocation(),
+      Config::MAIN_CPU_THREAD.GetLocation(),
+      Config::MAIN_OVERCLOCK_ENABLE.GetLocation()};
+  for (const auto& location : locations)
+    _previousSafeBootSettings[location] = layer->Get<std::string>(location);
+  _safeBootSettingsApplied = true;
+
+  // Cached Interpreter avoids JIT permission failures; the backend is reset to
+  // Dolphin's iOS default. These values override saved GameINI keys for this run.
+  Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::CachedInterpreter);
+  Config::SetCurrent(Config::MAIN_GFX_BACKEND,
+                     Config::MAIN_GFX_BACKEND.GetDefaultValue());
+  Config::SetCurrent(Config::MAIN_ENABLE_CHEATS, false);
+  Config::SetCurrent(Config::MAIN_SKIP_IPL, true);
+  Config::SetCurrent(Config::MAIN_CPU_THREAD, false);
+  Config::SetCurrent(Config::MAIN_OVERCLOCK_ENABLE, false);
+}
+
+- (void)restoreSafeBootSettings {
+  if (!_safeBootSettingsApplied)
+    return;
+  _safeBootSettingsApplied = false;
+
+  auto layer = Config::GetLayer(Config::LayerType::CurrentRun);
+  if (layer) {
+    for (const auto& [location, previousValue] : _previousSafeBootSettings) {
+      if (previousValue)
+        layer->Set(location, *previousValue);
+      else
+        layer->DeleteKey(location);
+    }
+    Config::OnConfigChanged();
+  }
+  _previousSafeBootSettings.clear();
+}
+
+- (void)dealloc {
+  // Also covers closing the test screen without ever starting emulation.
+  [self restoreSafeBootSettings];
+}
+
 - (void)startEmulation {
   [[EmulationCoordinator shared] runEmulationWithBootParameter:self.bootParameter];
 }
@@ -200,12 +265,14 @@
       @"JIT error: %@\n"
       @"Graphics backend: %@\n"
       @"Renderer size: %.0f x %.0f\n"
-      @"iOS version: %@\n",
+      @"iOS version: %@\n"
+      @"Safe Boot: %@\n",
       stateName, [EmulationCoordinator shared].lastBootOutcome ?: @"Unknown",
       readable ? @"Yes" : @"NO", gamePath, cpuName,
       jit.acquiredJit ? @"Yes" : @"NO", jit.deviceHasTxm ? @"Yes" : @"No",
       jit.acquisitionError ?: @"(none)", backend,
-      surface.width, surface.height, [UIDevice currentDevice].systemVersion];
+      surface.width, surface.height, [UIDevice currentDevice].systemVersion,
+      self.bootParameter.safeBoot ? @"YES" : @"No"];
   NSString* path = [NSHomeDirectory()
       stringByAppendingPathComponent:@"Documents/DolphiniOS-Launch-Diagnostics.txt"];
   [report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -343,6 +410,7 @@
 
 - (void)receiveEmulationEndNotification {
   dispatch_async(dispatch_get_main_queue(), ^{
+    [self restoreSafeBootSettings];
     [UIView animateWithDuration:0.25f animations:^{
       self.rendererView.alpha = 0.0f;
     } completion:^(bool) {
