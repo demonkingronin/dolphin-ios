@@ -33,13 +33,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Select Xcode
+      - name: Check Xcode toolchain
         run: |
-          LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$LATEST_XCODE" ]; then
-            sudo xcode-select -s "$LATEST_XCODE"
-          fi
+          xcode-select -p
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Install build dependencies
         run: |
