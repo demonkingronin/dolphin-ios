@@ -3,6 +3,11 @@ name: Build iOS IPA
 # Build only when explicitly requested. Avoids repeated expensive rebuilds
 # while preparing a combined test with the user's existing LiveContainer data.
 on:
+  # One combined test build after all features were committed.
+  # Future source fixes on this branch also rebuild automatically.
+  push:
+    branches:
+      - feature/controller-mapping-fix
   workflow_dispatch:
 
 permissions:
