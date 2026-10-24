@@ -7,6 +7,11 @@
 
 #import "Common/CommonPaths.h"
 #import "Common/FileUtil.h"
+#import "Common/Config/Config.h"
+#import "Common/StringUtil.h"
+
+#import "Core/Config/GraphicsSettings.h"
+#import "Core/Config/SYSCONFSettings.h"
 
 #import "Core/CommonTitles.h"
 #import "Core/Config/MainSettings.h"
@@ -238,11 +243,67 @@
   return nil;
 }
 
+// Read the base (global) Dolphin configuration, not a game's overrides.
+// Use the same typed config keys as Dolphin so defaults are shown correctly
+// even when no explicit setting is stored in the global INI.
+- (NSString*)globalChoiceForSetting:(NSDictionary*)setting {
+  NSString* key = setting[@"key"];
+  std::string raw;
+#define DOL_GLOBAL(K, INFO) if ([key isEqualToString:@K]) raw = ValueToString(Config::GetBase(Config::INFO))
+  DOL_GLOBAL("AspectRatio", GFX_ASPECT_RATIO);
+  else DOL_GLOBAL("InternalResolution", GFX_EFB_SCALE);
+  else DOL_GLOBAL("wideScreenHack", GFX_WIDESCREEN_HACK);
+  else DOL_GLOBAL("VSync", GFX_VSYNC);
+  else DOL_GLOBAL("HiresTextures", GFX_HIRES_TEXTURES);
+  else DOL_GLOBAL("CacheHiresTextures", GFX_CACHE_HIRES_TEXTURES);
+  else DOL_GLOBAL("ShowFPS", GFX_SHOW_FPS);
+  else DOL_GLOBAL("MaxAnisotropy", GFX_ENHANCE_MAX_ANISOTROPY);
+  else DOL_GLOBAL("EnablePixelLighting", GFX_ENABLE_PIXEL_LIGHTING);
+  else DOL_GLOBAL("EnableGPUTextureDecoding", GFX_ENABLE_GPU_TEXTURE_DECODING);
+  else DOL_GLOBAL("ForceTrueColor", GFX_ENHANCE_FORCE_TRUE_COLOR);
+  else DOL_GLOBAL("DisableFog", GFX_DISABLE_FOG);
+  else DOL_GLOBAL("EFBToTextureEnable", GFX_HACK_SKIP_EFB_COPY_TO_RAM);
+  else DOL_GLOBAL("XFBToTextureEnable", GFX_HACK_SKIP_XFB_COPY_TO_RAM);
+  else DOL_GLOBAL("EFBScaledCopy", GFX_HACK_COPY_EFB_SCALED);
+  else DOL_GLOBAL("ShaderCompilationMode", GFX_SHADER_COMPILATION_MODE);
+  else DOL_GLOBAL("CPUThread", MAIN_CPU_THREAD);
+  else DOL_GLOBAL("EnableCheats", MAIN_ENABLE_CHEATS);
+  else DOL_GLOBAL("MMU", MAIN_MMU);
+  else DOL_GLOBAL("OverclockEnable", MAIN_OVERCLOCK_ENABLE);
+  else DOL_GLOBAL("Overclock", MAIN_OVERCLOCK);
+  else DOL_GLOBAL("EmulationSpeed", MAIN_EMULATION_SPEED);
+  else DOL_GLOBAL("DSPHLE", MAIN_DSP_HLE);
+  else DOL_GLOBAL("DSPThread", MAIN_DSP_THREAD);
+  else DOL_GLOBAL("AudioLatency", MAIN_AUDIO_LATENCY);
+  else DOL_GLOBAL("DisableCopyFilter", GFX_ENHANCE_DISABLE_COPY_FILTER);
+  else DOL_GLOBAL("ArbitraryMipmapDetection", GFX_ENHANCE_ARBITRARY_MIPMAP_DETECTION);
+  else DOL_GLOBAL("EFBAccessEnable", GFX_HACK_EFB_ACCESS_ENABLE);
+  else DOL_GLOBAL("SkipDuplicateXFBs", GFX_HACK_SKIP_DUPLICATE_XFBS);
+  else DOL_GLOBAL("FastDepthCalc", GFX_FAST_DEPTH_CALC);
+  else DOL_GLOBAL("VISkip", GFX_HACK_VI_SKIP);
+  else DOL_GLOBAL("Widescreen", SYSCONF_WIDESCREEN);
+  else DOL_GLOBAL("ProgressiveScan", SYSCONF_PROGRESSIVE_SCAN);
+  else DOL_GLOBAL("PAL60", SYSCONF_PAL60);
+#undef DOL_GLOBAL
+  if (raw.empty())
+    return nil;  // A saved controller profile need not have an enumerated global value.
+  NSUInteger index = [setting[@"values"] indexOfObject:CppToFoundationString(raw)];
+  if (index != NSNotFound && index < [setting[@"choices"] count])
+    return setting[@"choices"][index];
+  return CppToFoundationString(raw);
+}
+
+- (NSString*)useGlobalLabelForSetting:(NSDictionary*)setting {
+  NSString* globalChoice = [self globalChoiceForSetting:setting];
+  return globalChoice.length ?
+      [NSString stringWithFormat:@"Use Global (%@)", globalChoice] : @"Use Global";
+}
+
 - (NSString*)valueForSetting:(NSDictionary*)setting {
   std::string value;
   const auto* group = _ini.GetSection(FoundationToCppString(setting[@"section"]));
   if (group == nullptr || !group->Get(FoundationToCppString(setting[@"key"]), &value))
-    return @"Inherit";
+    return [self useGlobalLabelForSetting:setting];
   NSUInteger index = [setting[@"values"] indexOfObject:CppToFoundationString(value)];
   if (index != NSNotFound && index < [setting[@"choices"] count])
     return setting[@"choices"][index];
@@ -311,7 +372,7 @@
       alertControllerWithTitle:setting[@"title"]
                       message:@"Choose an override for this game only."
                preferredStyle:UIAlertControllerStyleActionSheet];
-  [choices addAction:[UIAlertAction actionWithTitle:@"Inherit Global Setting"
+  [choices addAction:[UIAlertAction actionWithTitle:[self useGlobalLabelForSetting:setting]
       style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
     self->_ini.DeleteKey(FoundationToCppString(setting[@"section"]),
                          FoundationToCppString(setting[@"key"]));
@@ -722,6 +783,38 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
 
   NSString* problem = nil;
   auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(url.path));
+
+  // The Files document picker may copy a JSON into a temporary Inbox or
+  // security-scoped location. Dolphin normally resolves relative patch paths
+  // against the JSON directory, but importing a profile beside the game can
+  // unexpectedly resolve "../Load/Riivolution" against that temporary folder.
+  // Retry the exact same JSON as though it is beside the selected game.
+  if (descriptor && descriptor->riivolution) {
+    BOOL allFilesPresent = YES;
+    for (const auto& patch : descriptor->riivolution->patches) {
+      if (!File::Exists(patch.xml) || !File::Exists(patch.root)) {
+        allFilesPresent = NO;
+        break;
+      }
+    }
+    if (!allFilesPresent) {
+      NSString* jsonText = [NSString stringWithContentsOfURL:url
+          encoding:NSUTF8StringEncoding error:nil];
+      NSString* selectedGamePath =
+          CppToFoundationString(game.gameFile->GetFilePath());
+      NSString* virtualJSONPath = [[selectedGamePath stringByDeletingLastPathComponent]
+          stringByAppendingPathComponent:url.lastPathComponent];
+      if (jsonText != nil) {
+        auto relocated = DiscIO::ParseGameModDescriptorString(
+            FoundationToCppString(jsonText), FoundationToCppString(virtualJSONPath));
+        if (relocated && relocated->riivolution &&
+            !relocated->riivolution->patches.empty()) {
+          descriptor = std::move(relocated);  // Report intended paths if assets are absent.
+        }
+      }
+    }
+  }
+
   if (!descriptor) {
     problem = @"This is not a supported Dolphin game-mod descriptor JSON.";
   } else if (!descriptor->riivolution || descriptor->riivolution->patches.empty()) {
@@ -735,7 +828,13 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
     for (const auto& patch : descriptor->riivolution->patches) {
       if (!File::Exists(patch.xml) ||
           !File::Exists(patch.root)) {
-        problem = @"Required Riivolution XML or patch assets are missing. Put those files in Dolphin's accessible storage, then import the JSON.";
+        problem = !File::Exists(patch.xml)
+            ? [NSString stringWithFormat:
+                @"Riivolution XML not found at:\\n%@\\n\\nThe JSON references this separate XML file; importing JSON alone does not install a widescreen patch.",
+                CppToFoundationString(patch.xml)]
+            : [NSString stringWithFormat:
+                @"Riivolution patch folder not found at:\\n%@\\n\\nPlace the patch assets in this folder and import the JSON again.",
+                CppToFoundationString(patch.root)];
         break;
       }
       auto parsed = DiscIO::Riivolution::ParseFile(patch.xml);
