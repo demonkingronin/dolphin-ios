@@ -129,6 +129,40 @@
       @{@"title": @"Audio Latency", @"section": @"Core", @"key": @"AudioLatency",
         @"choices": @[@"10 ms", @"20 ms", @"40 ms", @"60 ms", @"100 ms"],
         @"values": @[@"10", @"20", @"40", @"60", @"100"]}
+    ],
+    @[
+      @{@"title": @"Force True Color", @"section": @"Video_Enhancements", @"key": @"ForceTrueColor",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Disable Copy Filter", @"section": @"Video_Enhancements", @"key": @"DisableCopyFilter",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Arbitrary Mipmap Detection", @"section": @"Video_Enhancements", @"key": @"ArbitraryMipmapDetection",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Pixel Lighting", @"section": @"Video_Settings", @"key": @"EnablePixelLighting",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]}
+    ],
+    @[
+      @{@"title": @"EFB Access", @"section": @"Video_Hacks", @"key": @"EFBAccessEnable",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Store EFB Copies to Texture", @"section": @"Video_Hacks", @"key": @"EFBToTextureEnable",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Store XFB Copies to Texture", @"section": @"Video_Hacks", @"key": @"XFBToTextureEnable",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Skip Duplicate XFBs", @"section": @"Video_Hacks", @"key": @"SkipDuplicateXFBs",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Fast Depth Calculation", @"section": @"Video_Settings", @"key": @"FastDepthCalc",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Disable Fog", @"section": @"Video_Settings", @"key": @"DisableFog",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"VBI Skip", @"section": @"Video_Hacks", @"key": @"VISkip",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]}
+    ],
+    @[
+      @{@"title": @"Wii Widescreen", @"section": @"Wii", @"key": @"Widescreen",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"Progressive Scan", @"section": @"Core", @"key": @"ProgressiveScan",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]},
+      @{@"title": @"PAL60", @"section": @"Core", @"key": @"PAL60",
+        @"choices": @[@"Off", @"On"], @"values": @[@"False", @"True"]}
     ]
   ];
 
@@ -162,7 +196,7 @@
     }
   }
   NSMutableArray<NSArray<NSDictionary*>*>* groups = [_sections mutableCopy];
-  NSMutableArray<NSString*>* titles = [@[@"Graphics", @"Emulation", @"Audio"] mutableCopy];
+  NSMutableArray<NSString*>* titles = [@[@"Graphics", @"Emulation", @"Audio", @"Enhancements", @"Graphics Hacks", @"Wii"] mutableCopy];
   if (controllerSettings.count > 0) {
     [groups addObject:controllerSettings];
     [titles addObject:@"Controller Profiles"];
@@ -199,7 +233,7 @@
     return @"Only the selected game's configuration is changed. Other games keep global settings.";
   if (section == (NSInteger)_sections.count)
     return @"Clears only the overrides shown above. Existing cheat codes and other GameINI data are preserved.";
-  if (section == 3 && _sections.count > 3)
+  if (section == (NSInteger)_sections.count - 1 && _sections.count > 6)
     return @"Select a controller profile already saved in Dolphin. Settings are loaded only for this game.";
   return nil;
 }
