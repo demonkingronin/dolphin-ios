@@ -41,6 +41,7 @@
   NSString* _iniPath;
   Common::IniFile _ini;
   NSArray<NSArray<NSDictionary*>*>* _sections;
+  NSArray<NSString*>* _sectionTitles;
 }
 
 - (instancetype)initWithGame:(GameFilePtrWrapper*)game {
@@ -109,6 +110,46 @@
     ]
   ];
 
+  // Game-specific controller profile names are loaded from Dolphin's real
+  // Profiles/GCPad and Profiles/Wiimote directories, not fabricated options.
+  NSMutableArray<NSDictionary*>* controllerSettings = [NSMutableArray array];
+  NSString* configRoot = CppToFoundationString(File::GetUserPath(D_CONFIG_IDX));
+  for (int controllerPort = 0; controllerPort < 4; ++controllerPort) {
+    for (NSString* type in @[@"GCPad", @"Wiimote"]) {
+      NSString* profileDir = [[configRoot stringByAppendingPathComponent:@"Profiles"]
+                                 stringByAppendingPathComponent:type];
+      NSArray<NSString*>* found =
+          [[NSFileManager defaultManager] contentsOfDirectoryAtPath:profileDir error:nil];
+      NSMutableArray<NSString*>* profileNames = [NSMutableArray array];
+      for (NSString* filename in found) {
+        if ([[filename.pathExtension lowercaseString] isEqualToString:@"ini"])
+          [profileNames addObject:[filename stringByDeletingPathExtension]];
+      }
+      if (profileNames.count == 0)
+        continue;
+      [profileNames sortUsingSelector:@selector(localizedStandardCompare:)];
+      NSString* displayType = [type isEqualToString:@"GCPad"] ? @"GameCube" : @"Wii Remote";
+      NSString* key = [NSString stringWithFormat:@"%@Profile%d",
+          [type isEqualToString:@"GCPad"] ? @"Pad" : @"Wiimote", controllerPort + 1];
+      // Dolphin uses controller index 0-3 for these keys, not 1-4.
+      key = [NSString stringWithFormat:@"%@Profile%d",
+          [type isEqualToString:@"GCPad"] ? @"Pad" : @"Wiimote", controllerPort];
+      [controllerSettings addObject:@{
+        @"title": [NSString stringWithFormat:@"%@ Port %d", displayType, controllerPort + 1],
+        @"section": [type isEqualToString:@"GCPad"] ? @"GCPad.Controls" : @"WiiPad.Controls",
+        @"key": key, @"choices": profileNames, @"values": profileNames
+      }];
+    }
+  }
+  NSMutableArray<NSArray<NSDictionary*>*>* groups = [_sections mutableCopy];
+  NSMutableArray<NSString*>* titles = [@[@"Graphics", @"Emulation", @"Audio"] mutableCopy];
+  if (controllerSettings.count > 0) {
+    [groups addObject:controllerSettings];
+    [titles addObject:@"Controller Profiles"];
+  }
+  _sections = groups;
+  _sectionTitles = titles;
+
   std::string gameId = _game.gameFile->GetGameID();
   std::string rev = std::to_string(_game.gameFile->GetRevision());
   const std::string iniPath = File::GetUserPath(D_GAMESETTINGS_IDX) +
@@ -130,7 +171,7 @@
 }
 
 - (NSString*)tableView:(UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
-  return (@[@"Graphics", @"Emulation", @"Audio", @"Overrides"])[section];
+  return section < (NSInteger)_sectionTitles.count ? _sectionTitles[section] : @"Overrides";
 }
 
 - (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
@@ -138,6 +179,8 @@
     return @"Only the selected game's configuration is changed. Other games keep global settings.";
   if (section == (NSInteger)_sections.count)
     return @"Clears only the overrides shown above. Existing cheat codes and other GameINI data are preserved.";
+  if (section == 3 && _sections.count > 3)
+    return @"Select a controller profile already saved in Dolphin. Settings are loaded only for this game.";
   return nil;
 }
 
