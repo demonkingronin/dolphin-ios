@@ -22,6 +22,7 @@
 #import "GameFilePtrWrapper.h"
 #import "ImportFileManager.h"
 #import "LocalizationUtil.h"
+#import "SoftwarePropertiesInfoViewController.h"
 
 typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
   DOLSoftwareListDocumentPickerTypeImportSoftware,
@@ -237,9 +238,26 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
     
     NSMutableArray<UIAction*>* actions = [[NSMutableArray alloc] init];
     
-    [actions addObject:[UIAction actionWithTitle:DOLCoreLocalizedString(@"Properties") image:[UIImage systemImageNamed:@"square.and.pencil"] identifier:nil handler:^(UIAction*) {
+    [actions addObject:[UIAction actionWithTitle:DOLCoreLocalizedString(@"Game Info")
+                                               image:[UIImage systemImageNamed:@"info.circle"]
+                                          identifier:nil handler:^(UIAction*) {
+      UIStoryboard* storyboard = [UIStoryboard storyboardWithName:@"SoftwareProperties" bundle:nil];
+      SoftwarePropertiesInfoViewController* info =
+          [storyboard instantiateViewControllerWithIdentifier:@"GameInfo"];
+      info.gameFileWrapper = gameFileWrapper;
+      info.navigationItem.title = DOLCoreLocalizedString(@"Game Info");
+      info.navigationItem.rightBarButtonItem =
+          [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                       target:self
+                                                       action:@selector(dismissGameInfo)];
+      UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:info];
+      [self presentViewController:nav animated:YES completion:nil];
+    }]];
+
+    [actions addObject:[UIAction actionWithTitle:DOLCoreLocalizedString(@"Cheat Codes")
+                                               image:[UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"]
+                                          identifier:nil handler:^(UIAction*) {
       self->_selectedFile = gameFileWrapper;
-      
       [self performSegueWithIdentifier:@"properties" sender:nil];
     }]];
     
@@ -265,6 +283,10 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
     
     return [UIMenu menuWithTitle:gameName children:[actions copy]];
   }];
+}
+
+- (void)dismissGameInfo {
+  [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)receiveImportFileFinishedNotification {
