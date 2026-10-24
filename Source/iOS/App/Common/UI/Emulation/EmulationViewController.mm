@@ -8,6 +8,9 @@
 #import <GameController/GameController.h>
 
 #import "Common/Config/Config.h"
+#import "Common/CommonPaths.h"
+#import "Common/FileUtil.h"
+#import "Core/Config/GraphicsSettings.h"
 
 #include <map>
 #include <optional>
@@ -64,13 +67,32 @@
   [diagnosticButton addTarget:self action:@selector(showLaunchDiagnostics)
             forControlEvents:UIControlEventTouchUpInside];
   [self.view addSubview:diagnosticButton];
+
+  // Companion report: inspect the EXACT user directory and game ID Dolphin uses
+  // for replacement textures. This does not move or modify any DDS files.
+  UIButton* textureButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  [textureButton setTitle:@"Textures" forState:UIControlStateNormal];
+  [textureButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+  textureButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+  textureButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
+  textureButton.layer.cornerRadius = 8;
+  textureButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [textureButton addTarget:self action:@selector(showTextureDiagnostics)
+         forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:textureButton];
+
   [NSLayoutConstraint activateConstraints:@[
     [diagnosticButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor
                                                    constant:10],
     [diagnosticButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
                                                constant:8],
     [diagnosticButton.widthAnchor constraintEqualToConstant:90],
-    [diagnosticButton.heightAnchor constraintEqualToConstant:32]
+    [diagnosticButton.heightAnchor constraintEqualToConstant:32],
+    [textureButton.leadingAnchor constraintEqualToAnchor:diagnosticButton.trailingAnchor
+                                               constant:8],
+    [textureButton.centerYAnchor constraintEqualToAnchor:diagnosticButton.centerYAnchor],
+    [textureButton.widthAnchor constraintEqualToConstant:90],
+    [textureButton.heightAnchor constraintEqualToConstant:32]
   ]];
   
   // Create right bar button items
@@ -224,6 +246,131 @@
 
 - (void)startEmulation {
   [[EmulationCoordinator shared] runEmulationWithBootParameter:self.bootParameter];
+}
+
+// "Found 0 custom textures" comes from Dolphin's HiresTexture::Update.
+// Match its real game-ID directory selection and tex1_ filename rules while
+// reporting the exact active guest storage path, not a guessed Files location.
+- (NSString*)replacementTextureDiagnostics {
+  NSString* gameID = CppToFoundationString(SConfig::GetInstance().GetGameID());
+  NSString* textureRoot = CppToFoundationString(File::GetUserPath(D_HIRESTEXTURES_IDX));
+  NSString* userRoot = CppToFoundationString(File::GetUserPath(D_USER_IDX));
+  BOOL enabled = Config::Get(Config::GFX_HIRES_TEXTURES);
+  NSFileManager* fm = [NSFileManager defaultManager];
+
+  NSString* selectedFolder = [textureRoot stringByAppendingPathComponent:gameID ?: @""];
+  BOOL selectedIsDirectory = NO;
+  BOOL selectedExists = [fm fileExistsAtPath:selectedFolder
+                                isDirectory:&selectedIsDirectory] && selectedIsDirectory;
+  BOOL regionFallback = NO;
+
+  // Dolphin checks the 3-character folder only if the 6-character
+  // region-specific folder does not exist.
+  if (!selectedExists && gameID.length >= 3) {
+    NSString* fallback = [textureRoot stringByAppendingPathComponent:
+                          [gameID substringToIndex:3]];
+    BOOL fallbackIsDir = NO;
+    if ([fm fileExistsAtPath:fallback isDirectory:&fallbackIsDir] && fallbackIsDir) {
+      selectedFolder = fallback;
+      selectedExists = YES;
+      regionFallback = YES;
+    }
+  }
+
+  NSUInteger foundDDS = 0;
+  NSUInteger foundPNG = 0;
+  NSUInteger recognized = 0;
+  NSString* firstFile = @"(none)";
+  if (selectedExists) {
+    NSDirectoryEnumerator<NSString*>* files = [fm enumeratorAtPath:selectedFolder];
+    for (NSString* relative in files) {
+      NSString* ext = relative.pathExtension.lowercaseString;
+      if (![ext isEqualToString:@"dds"] && ![ext isEqualToString:@"png"])
+        continue;
+      if ([ext isEqualToString:@"dds"])
+        foundDDS++;
+      else
+        foundPNG++;
+      if (firstFile.length == 0 || [firstFile isEqualToString:@"(none)"])
+        firstFile = relative.lastPathComponent;
+      if ([relative.lastPathComponent hasPrefix:@"tex1_"])
+        recognized++;
+    }
+  }
+
+  // Also check the exact folder the user expects, without guessing that this
+  // is necessarily the currently running game's ID.
+  NSString* expectedFolder = [textureRoot stringByAppendingPathComponent:@"RDSE70"];
+  BOOL expectedIsDirectory = NO;
+  BOOL expectedExists = [fm fileExistsAtPath:expectedFolder
+                                isDirectory:&expectedIsDirectory] && expectedIsDirectory;
+  NSUInteger expectedTextures = 0;
+  if (expectedExists && ![selectedFolder isEqualToString:expectedFolder]) {
+    for (NSString* relative in [fm enumeratorAtPath:expectedFolder]) {
+      NSString* ext = relative.pathExtension.lowercaseString;
+      if (([ext isEqualToString:@"dds"] || [ext isEqualToString:@"png"]) &&
+          [relative.lastPathComponent hasPrefix:@"tex1_"])
+        expectedTextures++;
+    }
+  } else if (expectedExists) {
+    expectedTextures = recognized;
+  }
+
+  return [NSString stringWithFormat:
+      @"DolphiniOS texture diagnostics\n"
+      @"Running game ID: %@\n"
+      @"HD Textures enabled: %@\n"
+      @"Active Dolphin Documents: %@\n"
+      @"Texture root: %@\n"
+      @"Folder Dolphin selected: %@\n"
+      @"Selected folder exists: %@\n"
+      @"Region-free fallback: %@\n"
+      @"DDS files in selected folder: %lu\n"
+      @"PNG files in selected folder: %lu\n"
+      @"Recognized tex1_ files: %lu\n"
+      @"Example file: %@\n"
+      @"Expected RDSE70 folder: %@\n"
+      @"RDSE70 exists in this guest: %@\n"
+      @"Recognized files under RDSE70: %lu\n"
+      @"Note: RDSE70 values only describe this app's active storage.",
+      gameID.length ? gameID : @"(not set)",
+      enabled ? @"YES" : @"NO",
+      userRoot, textureRoot, selectedFolder,
+      selectedExists ? @"YES" : @"NO", regionFallback ? @"YES" : @"NO",
+      (unsigned long)foundDDS, (unsigned long)foundPNG,
+      (unsigned long)recognized, firstFile,
+      expectedFolder, expectedExists ? @"YES" : @"NO",
+      (unsigned long)expectedTextures];
+}
+
+- (void)showTextureDiagnostics {
+  // Large packs can contain thousands of DDS files. Enumerate off the UI
+  // thread, then present the report and Copy Report control on the main thread.
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSString* report = [weakSelf replacementTextureDiagnostics];
+    if (!report)
+      return;
+    NSString* savedPath = [NSHomeDirectory()
+        stringByAppendingPathComponent:@"Documents/DolphiniOS-Texture-Diagnostics.txt"];
+    [report writeToFile:savedPath atomically:YES
+               encoding:NSUTF8StringEncoding error:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      typeof(self) strongSelf = weakSelf;
+      if (!strongSelf || !strongSelf.view.window)
+        return;
+      UIAlertController* alert = [UIAlertController
+          alertControllerWithTitle:@"Texture Diagnostics" message:report
+               preferredStyle:UIAlertControllerStyleAlert];
+      [alert addAction:[UIAlertAction actionWithTitle:@"Copy Report"
+          style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [UIPasteboard generalPasteboard].string = report;
+      }]];
+      [alert addAction:[UIAlertAction actionWithTitle:@"Close"
+          style:UIAlertActionStyleCancel handler:nil]];
+      [strongSelf presentViewController:alert animated:YES completion:nil];
+    });
+  });
 }
 
 // A read-only snapshot for the black-screen investigation. No settings are changed.
