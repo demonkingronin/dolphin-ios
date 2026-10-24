@@ -207,11 +207,14 @@ std::string LogManager::GetTimestamp()
   // NOTE: the Qt LogWidget hardcodes the expected length of the timestamp portion of the log line,
   // so ensure they stay in sync
 
-  // We want milliseconds *and not hours*, so can't directly use STL formatters
+  // Retain the existing MM:SS:mmm format without instantiating fmt's
+  // older chrono time_point formatter, which newer Apple Clang rejects.
   const auto now = std::chrono::system_clock::now();
   const auto now_s = std::chrono::floor<std::chrono::seconds>(now);
   const auto now_ms = std::chrono::floor<std::chrono::milliseconds>(now);
-  return fmt::format("{:%M:%S}:{:03}", now_s, (now_ms - now_s).count());
+  const std::tm local_time = fmt::localtime(std::chrono::system_clock::to_time_t(now));
+  return fmt::format("{:02}:{:02}:{:03}", local_time.tm_min, local_time.tm_sec,
+                     (now_ms - now_s).count());
 }
 
 void LogManager::LogWithFullPath(LogLevel level, LogType type, const char* file, int line,
