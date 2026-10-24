@@ -18,6 +18,7 @@
 #import "MappingGroupEditViewControllerDelegate.h"
 #import "MappingUtil.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -388,12 +389,19 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
   // Arm detection before displaying the alert. Otherwise the first physical
   // button press can happen while the alert animates and is silently lost.
   dispatch_async(_inputDetectionQueue, ^{
+    // A freshly reconnected MFi controller can have a different device
+    // qualifier from the one stored in the selected emulated controller.
+    // Fall back to every currently connected device rather than silently
+    // finishing detection with zero available inputs.
+    const auto connectedDevices = g_controller_interface.GetAllDeviceStrings();
     std::vector<std::string> devices;
-    if (allDevices) {
-      devices = g_controller_interface.GetAllDeviceStrings();
-    } else {
+    const bool selectedConnected =
+        std::find(connectedDevices.begin(), connectedDevices.end(), defaultDevice) !=
+        connectedDevices.end();
+    if (allDevices || !selectedConnected)
+      devices = connectedDevices;
+    else
       devices.push_back(defaultDevice);
-    }
 
     self->_inputDetector = std::make_unique<ciface::Core::InputDetector>();
     self->_inputDetector->Start(g_controller_interface, devices);
@@ -403,7 +411,7 @@ typedef NS_ENUM(NSInteger, DOLMappingGroupEditSection) {
     self->_inputPollingTimer = dispatch_source_create(
         DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self->_inputDetectionQueue);
     dispatch_source_set_timer(self->_inputPollingTimer, DISPATCH_TIME_NOW,
-                              NSEC_PER_SEC / 120, NSEC_PER_MSEC);
+                              NSEC_PER_SEC / 240, NSEC_PER_MSEC);
     dispatch_source_set_event_handler(self->_inputPollingTimer, ^{
       if (!self->_inputDetector)
         return;

@@ -815,6 +815,42 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
     }
   }
 
+  // JSON files created in another LiveContainer guest can contain the old
+  // guest's absolute path (including its container UUID). Recover only files
+  // that already exist under this installation's real Load/Riivolution folder.
+  // Never fabricate XML or silently accept a missing patch.
+  if (descriptor && descriptor->riivolution) {
+    NSString* loadRoot = [CppToFoundationString(File::GetUserPath(D_USER_IDX))
+        stringByAppendingPathComponent:@"Load/Riivolution"];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    for (auto& patch : descriptor->riivolution->patches) {
+      if (!File::Exists(patch.xml)) {
+        NSString* oldXML = CppToFoundationString(patch.xml);
+        NSRange marker = [oldXML rangeOfString:@"/Load/Riivolution/"
+                                       options:NSBackwardsSearch];
+        NSString* suffix = marker.location != NSNotFound
+            ? [oldXML substringFromIndex:NSMaxRange(marker)]
+            : [oldXML lastPathComponent];
+        NSString* localXML = [loadRoot stringByAppendingPathComponent:suffix];
+        if ([fm isReadableFileAtPath:localXML])
+          patch.xml = FoundationToCppString(localXML);
+      }
+      if (!File::Exists(patch.root)) {
+        NSString* oldRoot = CppToFoundationString(patch.root);
+        NSRange marker = [oldRoot rangeOfString:@"/Load/Riivolution/"
+                                        options:NSBackwardsSearch];
+        NSString* suffix = marker.location != NSNotFound
+            ? [oldRoot substringFromIndex:NSMaxRange(marker)]
+            : @"";
+        NSString* localRoot = suffix.length
+            ? [loadRoot stringByAppendingPathComponent:suffix] : loadRoot;
+        BOOL isDirectory = NO;
+        if ([fm fileExistsAtPath:localRoot isDirectory:&isDirectory] && isDirectory)
+          patch.root = FoundationToCppString(localRoot);
+      }
+    }
+  }
+
   if (!descriptor) {
     problem = @"This is not a supported Dolphin game-mod descriptor JSON.";
   } else if (!descriptor->riivolution || descriptor->riivolution->patches.empty()) {
@@ -830,7 +866,7 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
           !File::Exists(patch.root)) {
         problem = !File::Exists(patch.xml)
             ? [NSString stringWithFormat:
-                @"Riivolution XML not found at:\\n%@\\n\\nThe JSON references this separate XML file; importing JSON alone does not install a widescreen patch.",
+                @"Missing Riivolution patch XML:\n%@\n\nThe JSON is a launch profile, not the patch itself. Put the actual Widescreen Patch.xml and any related patch files inside this Dolphin installation's Documents/Load/Riivolution folder, then import again.",
                 CppToFoundationString(patch.xml)]
             : [NSString stringWithFormat:
                 @"Riivolution patch folder not found at:\\n%@\\n\\nPlace the patch assets in this folder and import the JSON again.",
