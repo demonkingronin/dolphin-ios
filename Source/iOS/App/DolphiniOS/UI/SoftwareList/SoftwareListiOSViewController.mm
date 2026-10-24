@@ -23,6 +23,14 @@
 #import "ImportFileManager.h"
 #import "LocalizationUtil.h"
 #import "SoftwarePropertiesInfoViewController.h"
+#import "GameFileCacheManager.h"
+
+#import "Common/IniFile.h"
+#import "DiscIO/GameModDescriptor.h"
+
+#include <algorithm>
+#include <string>
+
 
 #import "Common/IniFile.h"
 #import "DiscIO/GameModDescriptor.h"
@@ -292,6 +300,239 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
   DOLSoftwareListDocumentPickerTypeImportPatchProfile,
 };
 
+
+#pragma mark - Per-game settings
+
+// This editor writes only a revision-specific GameINI. Dolphin itself loads these
+// values through ConfigLoaders::GenerateLocalGameConfigLoader at game startup.
+// It intentionally does not mutate the running/global configuration.
+@interface DOLGameSettingsViewController : UITableViewController
+@property (nonatomic, strong) GameFilePtrWrapper* gameFileWrapper;
+@end
+
+@implementation DOLGameSettingsViewController {
+  NSArray<NSDictionary*>* _categories;
+  NSString* _gameIniPath;
+}
+
+static NSDictionary* DOLSetting(NSString* label, NSString* section, NSString* key,
+                                NSArray<NSString*>* options, NSArray<NSString*>* values) {
+  return @{@"label":label, @"section":section, @"key":key,
+           @"options":options, @"values":values};
+}
+
+static NSDictionary* DOLToggle(NSString* label, NSString* section, NSString* key) {
+  return DOLSetting(label, section, key, @[@"Off", @"On"], @[@"False", @"True"]);
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = @"Game Settings";
+  self.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                   target:self action:@selector(closeSettings)];
+  const auto& game = self.gameFileWrapper.gameFile;
+  NSString* name = CppToFoundationString(game->GetGameID());
+  NSString* filename = [NSString stringWithFormat:@"%@r%u.ini", name, (unsigned)game->GetRevision()];
+  _gameIniPath = [CppToFoundationString(File::GetUserPath(D_GAMESETTINGS_IDX))
+      stringByAppendingPathComponent:filename];
+
+  _categories = @[
+    @{@"title":@"General", @"rows":@[
+      DOLToggle(@"Dual Core", @"Core", @"CPUThread"),
+      DOLToggle(@"Enable Cheats", @"Core", @"EnableCheats"),
+      DOLToggle(@"Enable MMU", @"Core", @"MMU"),
+      DOLToggle(@"Sync on Skip Idle", @"Core", @"SyncOnSkipIdle"),
+      DOLSetting(@"Emulation Speed", @"Core", @"EmulationSpeed",
+                 @[@"Unlimited", @"50%", @"75%", @"100%", @"125%", @"150%", @"200%"],
+                 @[@"0.0", @"0.5", @"0.75", @"1.0", @"1.25", @"1.5", @"2.0"])
+    ]},
+    @{@"title":@"Graphics", @"rows":@[
+      DOLSetting(@"Aspect Ratio", @"Video_Settings", @"AspectRatio",
+                 @[@"Auto", @"Force 4:3", @"Force 16:9", @"Stretch to Window"],
+                 @[@"0", @"1", @"2", @"3"]),
+      DOLSetting(@"Internal Resolution", @"Video_Settings", @"InternalResolution",
+                 @[@"Auto", @"Native", @"2x Native", @"3x Native", @"4x Native", @"5x Native", @"6x Native"],
+                 @[@"0", @"1", @"2", @"3", @"4", @"5", @"6"]),
+      DOLToggle(@"Widescreen Hack", @"Video_Settings", @"wideScreenHack"),
+      DOLToggle(@"Show FPS", @"Video_Settings", @"ShowFPS"),
+      DOLToggle(@"VSync", @"Video_Hardware", @"VSync"),
+      DOLToggle(@"Load Custom Textures", @"Video_Settings", @"HiresTextures"),
+      DOLToggle(@"Cache Custom Textures", @"Video_Settings", @"CacheHiresTextures"),
+      DOLToggle(@"Wait for Shaders", @"Video_Settings", @"WaitForShadersBeforeStarting"),
+      DOLSetting(@"Shader Compilation Mode", @"Video_Settings", @"ShaderCompilationMode",
+                 @[@"Specialized", @"Exclusive Ubershaders", @"Hybrid Ubershaders", @"Skip Drawing"],
+                 @[@"0", @"1", @"2", @"3"])
+    ]},
+    @{@"title":@"Graphics Enhancements", @"rows":@[
+      DOLToggle(@"Disable Copy Filter", @"Video_Enhancements", @"DisableCopyFilter"),
+      DOLToggle(@"Force True Color", @"Video_Enhancements", @"ForceTrueColor"),
+      DOLToggle(@"Pixel Lighting", @"Video_Settings", @"EnablePixelLighting")
+    ]},
+    @{@"title":@"Graphics Hacks", @"rows":@[
+      DOLToggle(@"EFB Access", @"Video_Hacks", @"EFBAccessEnable"),
+      DOLToggle(@"Skip EFB Copy to RAM", @"Video_Hacks", @"EFBToTextureEnable"),
+      DOLToggle(@"Store XFB Copies to Texture", @"Video_Hacks", @"XFBToTextureEnable"),
+      DOLToggle(@"Fast Depth Calculation", @"Video_Settings", @"FastDepthCalc"),
+      DOLToggle(@"Disable Fog", @"Video_Settings", @"DisableFog")
+    ]},
+    @{@"title":@"Advanced CPU", @"rows":@[
+      DOLToggle(@"Custom CPU Clock", @"Core", @"OverclockEnable"),
+      DOLSetting(@"CPU Clock Speed", @"Core", @"Overclock",
+                 @[@"50%", @"75%", @"100%", @"125%", @"150%", @"200%"],
+                 @[@"0.5", @"0.75", @"1.0", @"1.25", @"1.5", @"2.0"]),
+      DOLToggle(@"Accurate CPU Cache", @"Core", @"AccurateCPUCache")
+    ]},
+    @{@"title":@"Wii", @"rows":@[
+      DOLToggle(@"Wii Widescreen", @"Wii", @"Widescreen")
+    ]},
+    @{@"title":@"Controller Profiles", @"rows":@[
+      DOLSetting(@"GameCube Port 1", @"GCPad.Controls", @"PadProfile1", @[], @[]),
+      DOLSetting(@"GameCube Port 2", @"GCPad.Controls", @"PadProfile2", @[], @[]),
+      DOLSetting(@"GameCube Port 3", @"GCPad.Controls", @"PadProfile3", @[], @[]),
+      DOLSetting(@"GameCube Port 4", @"GCPad.Controls", @"PadProfile4", @[], @[]),
+      DOLSetting(@"Wii Remote 1", @"Wiimote.Controls", @"WiimoteProfile1", @[], @[]),
+      DOLSetting(@"Wii Remote 2", @"Wiimote.Controls", @"WiimoteProfile2", @[], @[]),
+      DOLSetting(@"Wii Remote 3", @"Wiimote.Controls", @"WiimoteProfile3", @[], @[]),
+      DOLSetting(@"Wii Remote 4", @"Wiimote.Controls", @"WiimoteProfile4", @[], @[])
+    ]}
+  ];
+}
+
+- (void)closeSettings {
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSDictionary*)settingAt:(NSIndexPath*)indexPath {
+  return _categories[indexPath.section][@"rows"][indexPath.row];
+}
+
+- (NSString*)storedValueForSetting:(NSDictionary*)setting {
+  Common::IniFile ini;
+  ini.Load(FoundationToCppString(_gameIniPath));
+  const auto* section = ini.GetSection(FoundationToCppString(setting[@"section"]));
+  if (!section) return nil;
+  std::string value;
+  if (!section->Get(FoundationToCppString(setting[@"key"]), &value))
+    return nil;
+  return CppToFoundationString(value);
+}
+
+- (BOOL)saveValue:(NSString*)value forSetting:(NSDictionary*)setting {
+  Common::IniFile ini;
+  ini.Load(FoundationToCppString(_gameIniPath));
+  std::string section = FoundationToCppString(setting[@"section"]);
+  std::string key = FoundationToCppString(setting[@"key"]);
+  if (value == nil) {
+    ini.DeleteKey(section, key);
+  } else {
+    ini.GetOrCreateSection(section)->Set(key, FoundationToCppString(value));
+  }
+  return ini.Save(FoundationToCppString(_gameIniPath));
+}
+
+- (NSArray<NSString*>*)availableProfilesForSetting:(NSDictionary*)setting {
+  NSString* section = setting[@"section"];
+  NSString* folder = [section isEqualToString:@"GCPad.Controls"] ? @"GCPad" : @"Wiimote";
+  NSString* directory = [CppToFoundationString(File::GetUserPath(D_CONFIG_IDX))
+      stringByAppendingPathComponent:[@"Profiles" stringByAppendingPathComponent:folder]];
+  NSArray<NSString*>* files = [[NSFileManager defaultManager]
+       contentsOfDirectoryAtPath:directory error:nil] ?: @[];
+  NSMutableArray<NSString*>* profiles = [NSMutableArray array];
+  for (NSString* file in files) {
+    if ([[file.pathExtension lowercaseString] isEqualToString:@"ini"])
+      [profiles addObject:file.stringByDeletingPathExtension];
+  }
+  [profiles sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+  return profiles;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView*)tableView {
+  return _categories.count;
+}
+
+- (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
+  return [_categories[section][@"rows"] count];
+}
+
+- (NSString*)tableView:(UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
+  return _categories[section][@"title"];
+}
+
+- (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
+  if (section == 0)
+    return @"Changes apply the next time this game starts. Inherit preserves the existing global/game defaults.";
+  if (section == _categories.count - 1)
+    return @"Controller profiles must already exist in DolphiniOS Settings. Other games remain unchanged.";
+  return nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"GameSetting"];
+  if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                        reuseIdentifier:@"GameSetting"];
+  NSDictionary* setting = [self settingAt:indexPath];
+  cell.textLabel.text = setting[@"label"];
+  NSString* value = [self storedValueForSetting:setting];
+  NSString* summary = @"Inherit";
+  if (value) {
+    NSArray<NSString*>* values = setting[@"values"];
+    NSUInteger i = [values indexOfObject:value];
+    summary = (i == NSNotFound) ? value : setting[@"options"][i];
+  }
+  cell.detailTextLabel.text = summary;
+  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  return cell;
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  NSDictionary* setting = [self settingAt:indexPath];
+  NSMutableArray<NSString*>* choices = [setting[@"options"] mutableCopy];
+  NSMutableArray<NSString*>* values = [setting[@"values"] mutableCopy];
+
+  if ([setting[@"section"] hasSuffix:@".Controls"]) {
+    choices = [[self availableProfilesForSetting:setting] mutableCopy];
+    values = [choices mutableCopy];
+    if (choices.count == 0) {
+      UIAlertController* missing = [UIAlertController alertControllerWithTitle:@"No Controller Profiles"
+          message:@"Save a controller profile in the regular Controller Settings first."
+          preferredStyle:UIAlertControllerStyleAlert];
+      [missing addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+      [self presentViewController:missing animated:YES completion:nil];
+      return;
+    }
+  }
+
+  UIAlertController* menu = [UIAlertController alertControllerWithTitle:setting[@"label"]
+      message:@"Override this game only" preferredStyle:UIAlertControllerStyleActionSheet];
+  void (^selectValue)(NSString*) = ^(NSString* value) {
+    if (![self saveValue:value forSetting:setting]) {
+      UIAlertController* error = [UIAlertController alertControllerWithTitle:@"Could Not Save"
+          message:@"The game-specific configuration file could not be written."
+          preferredStyle:UIAlertControllerStyleAlert];
+      [error addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+      [self presentViewController:error animated:YES completion:nil];
+    } else {
+      [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    }
+  };
+  [menu addAction:[UIAlertAction actionWithTitle:@"Inherit (No Override)"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) { selectValue(nil); }]];
+  for (NSUInteger i = 0; i < choices.count; ++i) {
+    NSString* value = values[i];
+    [menu addAction:[UIAlertAction actionWithTitle:choices[i] style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction* action) { selectValue(value); }]];
+  }
+  [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  menu.popoverPresentationController.sourceView = [tableView cellForRowAtIndexPath:indexPath];
+  menu.popoverPresentationController.sourceRect =
+      [tableView cellForRowAtIndexPath:indexPath].bounds;
+  [self presentViewController:menu animated:YES completion:nil];
+}
+
+@end
+
 @implementation SoftwareListiOSViewController {
   DOLSoftwareListDocumentPickerType _pickerType;
   NSURL* _openedUrl;
@@ -536,6 +777,16 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
                                                image:[UIImage systemImageNamed:@"doc.badge.plus"]
                                           identifier:nil handler:^(__unused UIAction* action) {
       [self importPatchProfileForGame:gameFileWrapper];
+    }]];
+
+    [actions addObject:[UIAction actionWithTitle:@"Game Settings"
+                                               image:[UIImage systemImageNamed:@"gearshape"]
+                                          identifier:nil handler:^(__unused UIAction* action) {
+      DOLGameSettingsViewController* editor =
+          [[DOLGameSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+      editor.gameFileWrapper = gameFileWrapper;
+      UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:editor];
+      [self presentViewController:nav animated:YES completion:nil];
     }]];
 
     [actions addObject:[UIAction actionWithTitle:DOLCoreLocalizedString(@"Cheat Codes")
