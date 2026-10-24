@@ -170,6 +170,20 @@
     second_game = match_without_revision;
   }
   
+  NSString* resolvedPath = profilePath.length > 0 ?
+      profilePath : CppToFoundationString(game->GetFilePath());
+  BOOL pathIsDirectory = NO;
+  if (![[NSFileManager defaultManager] fileExistsAtPath:resolvedPath
+                                           isDirectory:&pathIsDirectory] || pathIsDirectory) {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Game File Unavailable"
+        message:@"The selected game or launch profile cannot be found in this Dolphin installation's storage. Existing files have not been changed."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+        style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+    return;
+  }
+
   _bootParameter = [[EmulationBootParameter alloc] init];
   _bootParameter.bootType = EmulationBootTypeFile;
   _bootParameter.path = profilePath.length > 0 ? profilePath :

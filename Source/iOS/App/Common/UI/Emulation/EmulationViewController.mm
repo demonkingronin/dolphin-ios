@@ -38,6 +38,27 @@
   [[EmulationCoordinator shared] registerMainDisplayView:self.rendererView];
   
   self.rendererView.alpha = 1.0f;
+
+  // Temporary diagnostic button stays visible even when the renderer is black
+  // and the regular navigation bar has been hidden.
+  UIButton* diagnosticButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  [diagnosticButton setTitle:@"Boot Info" forState:UIControlStateNormal];
+  [diagnosticButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  diagnosticButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+  diagnosticButton.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.72];
+  diagnosticButton.layer.cornerRadius = 8;
+  diagnosticButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [diagnosticButton addTarget:self action:@selector(showLaunchDiagnostics)
+            forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:diagnosticButton];
+  [NSLayoutConstraint activateConstraints:@[
+    [diagnosticButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor
+                                                   constant:10],
+    [diagnosticButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
+                                               constant:8],
+    [diagnosticButton.widthAnchor constraintEqualToConstant:90],
+    [diagnosticButton.heightAnchor constraintEqualToConstant:32]
+  ]];
   
   // Create right bar button items
   self.stopButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemStop target:self action:@selector(stopPressed)];
@@ -138,6 +159,65 @@
 
 - (void)startEmulation {
   [[EmulationCoordinator shared] runEmulationWithBootParameter:self.bootParameter];
+}
+
+// A read-only snapshot for the black-screen investigation. No settings are changed.
+- (void)showLaunchDiagnostics {
+  Core::State state = Core::GetState(Core::System::GetInstance());
+  NSString* stateName = @"Unknown";
+  switch (state) {
+    case Core::State::Uninitialized: stateName = @"Uninitialized"; break;
+    case Core::State::Paused: stateName = @"Paused"; break;
+    case Core::State::Running: stateName = @"Running"; break;
+    case Core::State::Stopping: stateName = @"Stopping"; break;
+    case Core::State::Starting: stateName = @"Starting"; break;
+  }
+
+  PowerPC::CPUCore cpu = Config::Get(Config::MAIN_CPU_CORE);
+  NSString* cpuName = @"Other";
+  switch (cpu) {
+    case PowerPC::CPUCore::Interpreter: cpuName = @"Interpreter"; break;
+    case PowerPC::CPUCore::CachedInterpreter: cpuName = @"Cached Interpreter"; break;
+    case PowerPC::CPUCore::JITARM64: cpuName = @"ARM64 JIT"; break;
+    case PowerPC::CPUCore::JIT64: cpuName = @"x64 JIT"; break;
+  }
+
+  NSString* gamePath = self.bootParameter.path ?: @"(system menu / IPL)";
+  BOOL readable = self.bootParameter.path ?
+      [[NSFileManager defaultManager] isReadableFileAtPath:self.bootParameter.path] : YES;
+  JitManager* jit = [JitManager shared];
+  NSString* backend = CppToFoundationString(Config::Get(Config::MAIN_GFX_BACKEND));
+  CGSize surface = self.rendererView.bounds.size;
+  NSString* report = [NSString stringWithFormat:
+      @"DolphiniOS launch diagnostics\n"
+      @"Core state: %@\n"
+      @"Boot stage: %@\n"
+      @"Game readable: %@\n"
+      @"Game path: %@\n"
+      @"CPU engine: %@\n"
+      @"JIT acquired: %@\n"
+      @"TXM: %@\n"
+      @"JIT error: %@\n"
+      @"Graphics backend: %@\n"
+      @"Renderer size: %.0f x %.0f\n"
+      @"iOS version: %@\n",
+      stateName, [EmulationCoordinator shared].lastBootOutcome ?: @"Unknown",
+      readable ? @"Yes" : @"NO", gamePath, cpuName,
+      jit.acquiredJit ? @"Yes" : @"NO", jit.deviceHasTxm ? @"Yes" : @"No",
+      jit.acquisitionError ?: @"(none)", backend,
+      surface.width, surface.height, [UIDevice currentDevice].systemVersion];
+  NSString* path = [NSHomeDirectory()
+      stringByAppendingPathComponent:@"Documents/DolphiniOS-Launch-Diagnostics.txt"];
+  [report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Boot Diagnostics"
+      message:report preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Copy Report"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+    [UIPasteboard generalPasteboard].string = report;
+  }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Close"
+      style:UIAlertActionStyleCancel handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)updateNavigationBar:(bool)hidden {
