@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 240
 
     env:
@@ -33,6 +33,7 @@ jobs:
         with:
           submodules: recursive
 
+      # Xcode 26+ is required for the project's AppIcon_Glass.icon Icon Composer asset.
       - name: Check Xcode toolchain
         run: |
           xcode-select -p
