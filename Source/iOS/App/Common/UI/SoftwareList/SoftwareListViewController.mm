@@ -31,6 +31,7 @@
   
   self->_gameFiles = [self hidePairedJSONDescriptors:
       [[GameFileCacheManager sharedManager] getGames]];
+  [self sortGameFiles];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -44,8 +45,41 @@
     dispatch_async(dispatch_get_main_queue(), ^{
       self->_gameFiles = [self hidePairedJSONDescriptors:
           [[GameFileCacheManager sharedManager] getGames]];
+      [self sortGameFiles];
       [self.collectionView reloadData];
     });
+  }];
+}
+
+// Sort the visible games using persisted preferences and the on-device play history.
+- (void)sortGameFiles {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* sort = [defaults stringForKey:@"DOLSoftwareSortKey"] ?: @"recent";
+  BOOL ascending = [defaults objectForKey:@"DOLSoftwareSortAscending"] ?
+      [defaults boolForKey:@"DOLSoftwareSortAscending"] : NO;
+  NSDictionary* usage = [defaults dictionaryForKey:@"DOLGameUsageStatisticsV1"] ?: @{};
+  self->_gameFiles = [self->_gameFiles sortedArrayUsingComparator:^NSComparisonResult(GameFilePtrWrapper* a, GameFilePtrWrapper* b) {
+    NSString* aName = CppToFoundationString(a.gameFile->GetName(UICommon::GameFile::Variant::LongAndPossiblyCustom));
+    NSString* bName = CppToFoundationString(b.gameFile->GetName(UICommon::GameFile::Variant::LongAndPossiblyCustom));
+    NSComparisonResult result = NSOrderedSame;
+    if ([sort isEqualToString:@"name"]) {
+      result = [aName localizedStandardCompare:bName];
+    } else {
+      NSString* aPath = CppToFoundationString(a.gameFile->GetFilePath());
+      NSString* bPath = CppToFoundationString(b.gameFile->GetFilePath());
+      NSDictionary* aUsage = usage[aPath];
+      NSDictionary* bUsage = usage[bPath];
+      NSString* metric = [sort isEqualToString:@"time"] ? @"timePlayed" : @"lastPlayed";
+      double av = [aUsage[metric] doubleValue];
+      double bv = [bUsage[metric] doubleValue];
+      if (av < bv) result = NSOrderedAscending;
+      else if (av > bv) result = NSOrderedDescending;
+    }
+    if (!ascending) {
+      if (result == NSOrderedAscending) result = NSOrderedDescending;
+      else if (result == NSOrderedDescending) result = NSOrderedAscending;
+    }
+    return result == NSOrderedSame ? [aName localizedStandardCompare:bName] : result;
   }];
 }
 
@@ -194,6 +228,8 @@
   _bootParameter.bootType = EmulationBootTypeFile;
   _bootParameter.path = profilePath.length > 0 ? profilePath :
       CppToFoundationString(game->GetFilePath());
+  // Attribute profile launches to their displayed base game in the library.
+  _bootParameter.usageGamePath = CppToFoundationString(game->GetFilePath());
   _bootParameter.secondPath = profilePath.length > 0 ? nil :
       (second_game != nullptr ? CppToFoundationString(second_game->GetFilePath()) : nil);
   _bootParameter.isNKit = gameFileWrapper.gameFile->IsNKit();
