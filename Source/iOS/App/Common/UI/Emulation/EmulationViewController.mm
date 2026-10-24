@@ -55,48 +55,9 @@
   
   self.rendererView.alpha = 1.0f;
 
-  // Temporary diagnostic button stays visible even when the renderer is black
-  // and the regular navigation bar has been hidden.
-  UIButton* diagnosticButton = [UIButton buttonWithType:UIButtonTypeSystem];
-  [diagnosticButton setTitle:@"Boot Info" forState:UIControlStateNormal];
-  [diagnosticButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-  diagnosticButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-  diagnosticButton.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.72];
-  diagnosticButton.layer.cornerRadius = 8;
-  diagnosticButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [diagnosticButton addTarget:self action:@selector(showLaunchDiagnostics)
-            forControlEvents:UIControlEventTouchUpInside];
-  [self.view addSubview:diagnosticButton];
+  // Diagnostic commands live in the existing gear menu, keeping gameplay
+  // and the pull-down arrow unobstructed.
 
-  // Companion report: inspect the EXACT user directory and game ID Dolphin uses
-  // for replacement textures. This does not move or modify any DDS files.
-  UIButton* textureButton = [UIButton buttonWithType:UIButtonTypeSystem];
-  [textureButton setTitle:@"Textures" forState:UIControlStateNormal];
-  [textureButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-  textureButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-  textureButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
-  textureButton.layer.cornerRadius = 8;
-  textureButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [textureButton addTarget:self action:@selector(showTextureDiagnostics)
-         forControlEvents:UIControlEventTouchUpInside];
-  [self.view addSubview:textureButton];
-
-  [NSLayoutConstraint activateConstraints:@[
-    // Center both debug buttons as one group, away from the upper-left
-    // back/exit arrow. Keep the group within the safe area on iPhone.
-    [diagnosticButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor
-                                                   constant:-94],
-    [diagnosticButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
-                                               constant:8],
-    [diagnosticButton.widthAnchor constraintEqualToConstant:90],
-    [diagnosticButton.heightAnchor constraintEqualToConstant:32],
-    [textureButton.leadingAnchor constraintEqualToAnchor:diagnosticButton.trailingAnchor
-                                               constant:8],
-    [textureButton.centerYAnchor constraintEqualToAnchor:diagnosticButton.centerYAnchor],
-    [textureButton.widthAnchor constraintEqualToConstant:90],
-    [textureButton.heightAnchor constraintEqualToConstant:32]
-  ]];
-  
   // Create right bar button items
   self.stopButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemStop target:self action:@selector(stopPressed)];
   self.pauseButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemPause target:self action:@selector(pausePressed)];
@@ -348,7 +309,7 @@
 - (void)showTextureDiagnostics {
   // Large packs can contain thousands of DDS files. Enumerate off the UI
   // thread, then present the report and Copy Report control on the main thread.
-  __weak typeof(self) weakSelf = self;
+  __weak EmulationViewController* weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSString* report = [weakSelf replacementTextureDiagnostics];
     if (!report)
@@ -358,7 +319,7 @@
     [report writeToFile:savedPath atomically:YES
                encoding:NSUTF8StringEncoding error:nil];
     dispatch_async(dispatch_get_main_queue(), ^{
-      typeof(self) strongSelf = weakSelf;
+      EmulationViewController* strongSelf = weakSelf;
       if (!strongSelf || !strongSelf.view.window)
         return;
       UIAlertController* alert = [UIAlertController

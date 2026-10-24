@@ -231,6 +231,22 @@ typedef NS_ENUM(NSInteger, DOLEmulationVisibleTouchPad) {
     }]
   ]]];
   
+  // Keep the original gear menu's Controllers and Save State actions intact.
+  // Reports are accessed here rather than floating over the game and exit arrow.
+  [menuItems addObject:[UIMenu menuWithTitle:@"Diagnostics"
+      image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
+    [UIAction actionWithTitle:@"Boot Info"
+        image:[UIImage systemImageNamed:@"info.circle"]
+        identifier:nil handler:^(__unused UIAction* action) {
+      [self showLaunchDiagnostics];
+    }],
+    [UIAction actionWithTitle:@"Texture Diagnostics"
+        image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"]
+        identifier:nil handler:^(__unused UIAction* action) {
+      [self showTextureDiagnostics];
+    }]
+  ]]];
+
   if ([self emulateSkylanderPortal] && Core::System::GetInstance().IsWii()) {
     [menuItems addObject:[UIMenu menuWithTitle:DOLCoreLocalizedString(@"Tools") image:nil identifier:nil options:UIMenuOptionsDisplayInline
                  children:@[
