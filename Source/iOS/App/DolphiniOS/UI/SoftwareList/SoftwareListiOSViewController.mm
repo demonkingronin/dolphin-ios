@@ -111,8 +111,9 @@
 
   std::string gameId = _game.gameFile->GetGameID();
   std::string rev = std::to_string(_game.gameFile->GetRevision());
-  _iniPath = CppToFoundationString(File::GetUserPath(D_GAMESETTINGS_IDX) +
-                                   gameId + "r" + rev + ".ini");
+  const std::string iniPath = File::GetUserPath(D_GAMESETTINGS_IDX) +
+                              gameId + "r" + rev + ".ini";
+  _iniPath = CppToFoundationString(iniPath);
   _ini.Load(FoundationToCppString(_iniPath));
 }
 
@@ -246,11 +247,13 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
   DOLSoftwareListDocumentPickerTypeImportSoftware,
   DOLSoftwareListDocumentPickerTypeImportNAND,
   DOLSoftwareListDocumentPickerTypeOpenExternal,
+  DOLSoftwareListDocumentPickerTypeImportPatchProfile,
 };
 
 @implementation SoftwareListiOSViewController {
   DOLSoftwareListDocumentPickerType _pickerType;
   NSURL* _openedUrl;
+  GameFilePtrWrapper* _profileImportGame;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -420,6 +423,9 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
     }
     
     [self loadGameFile:gameFileWrapper];
+  } else if (_pickerType == DOLSoftwareListDocumentPickerTypeImportPatchProfile) {
+    if (urls.count > 0)
+      [self finishImportPatchProfile:urls[0]];
   } else if (_pickerType == DOLSoftwareListDocumentPickerTypeImportNAND) {
     NSURL* url = urls[0];
     
@@ -472,6 +478,24 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
       [self presentViewController:nav animated:YES completion:nil];
     }]];
 
+    [actions addObject:[UIAction actionWithTitle:@"Game Settings"
+                                               image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+                                          identifier:nil handler:^(__unused UIAction* action) {
+      [self openGameSettings:gameFileWrapper];
+    }]];
+
+    [actions addObject:[UIAction actionWithTitle:@"Launch Profiles"
+                                               image:[UIImage systemImageNamed:@"square.stack"]
+                                          identifier:nil handler:^(__unused UIAction* action) {
+      [self showLaunchProfilesForGame:gameFileWrapper];
+    }]];
+
+    [actions addObject:[UIAction actionWithTitle:@"Import Patch Profile…"
+                                               image:[UIImage systemImageNamed:@"doc.badge.plus"]
+                                          identifier:nil handler:^(__unused UIAction* action) {
+      [self importPatchProfileForGame:gameFileWrapper];
+    }]];
+
     [actions addObject:[UIAction actionWithTitle:DOLCoreLocalizedString(@"Cheat Codes")
                                                image:[UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"]
                                           identifier:nil handler:^(UIAction*) {
@@ -505,6 +529,229 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
 
 - (void)dismissGameInfo {
   [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+
+#pragma mark - Per-game settings and launch profiles
+
+- (NSString*)profileGameKey:(GameFilePtrWrapper*)game {
+  const std::string& gameId = game.gameFile->GetGameID();
+  return [NSString stringWithFormat:@"%@r%u",
+      CppToFoundationString(gameId), (unsigned)game.gameFile->GetRevision()];
+}
+
+- (NSString*)profileDirectory:(GameFilePtrWrapper*)game {
+  NSString* profiles = [NSHomeDirectory() stringByAppendingPathComponent:
+      @"Documents/DolphiniOSLaunchProfiles"];
+  return [profiles stringByAppendingPathComponent:[self profileGameKey:game]];
+}
+
+- (NSString*)profileDefaultKey:(GameFilePtrWrapper*)game {
+  return [@"DolphiniOSDefaultLaunchProfile:" stringByAppendingString:
+      [self profileGameKey:game]];
+}
+
+- (NSArray<NSString*>*)profilesForGame:(GameFilePtrWrapper*)game {
+  NSString* directory = [self profileDirectory:game];
+  NSArray<NSString*>* files =
+      [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil];
+  NSMutableArray<NSString*>* paths = [NSMutableArray array];
+  for (NSString* filename in files) {
+    if ([[filename.pathExtension lowercaseString] isEqualToString:@"json"]) {
+      NSString* path = [directory stringByAppendingPathComponent:filename];
+      auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(path));
+      if (descriptor)
+        [paths addObject:path];
+    }
+  }
+  [paths sortUsingSelector:@selector(localizedStandardCompare:)];
+  return paths;
+}
+
+- (NSString*)profileLabel:(NSString*)path {
+  auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(path));
+  if (descriptor && !descriptor->display_name.empty())
+    return CppToFoundationString(descriptor->display_name);
+  return [[path lastPathComponent] stringByDeletingPathExtension];
+}
+
+- (void)presentProfileError:(NSString*)message {
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Launch Profiles"
+      message:message preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+      style:UIAlertActionStyleDefault handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)openGameSettings:(GameFilePtrWrapper*)game {
+  DOLPerGameSettingsViewController* settings =
+      [[DOLPerGameSettingsViewController alloc] initWithGame:game];
+  UINavigationController* nav = [[UINavigationController alloc]
+      initWithRootViewController:settings];
+  [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)importPatchProfileForGame:(GameFilePtrWrapper*)game {
+  _profileImportGame = game;
+  UTType* json = [UTType typeWithFilenameExtension:@"json"];
+  [self openDocumentPickerWithContentTypes:@[json]
+      pickerType:DOLSoftwareListDocumentPickerTypeImportPatchProfile];
+}
+
+- (void)finishImportPatchProfile:(NSURL*)url {
+  GameFilePtrWrapper* game = _profileImportGame;
+  _profileImportGame = nil;
+  if (game == nil || ![url startAccessingSecurityScopedResource]) {
+    [self presentProfileError:@"The selected JSON could not be opened."];
+    return;
+  }
+
+  NSString* problem = nil;
+  auto descriptor = DiscIO::ParseGameModDescriptorFile(FoundationToCppString(url.path));
+  if (!descriptor) {
+    problem = @"This is not a supported Dolphin game-mod descriptor JSON.";
+  } else if (!descriptor->riivolution || descriptor->riivolution->patches.empty()) {
+    problem = @"This profile contains no Riivolution patches.";
+  } else {
+    UICommon::GameFile sourceGame(descriptor->base_file);
+    if (!sourceGame.IsValid() ||
+        sourceGame.GetGameID() != game.gameFile->GetGameID() ||
+        sourceGame.GetRevision() != game.gameFile->GetRevision()) {
+      problem = @"This profile targets a different game or revision.";
+    }
+  }
+
+  if (problem == nil) {
+    for (const auto& patch : descriptor->riivolution->patches) {
+      if (!File::Exists(patch.xml) ||
+          ![[NSFileManager defaultManager] fileExistsAtPath:CppToFoundationString(patch.root)]) {
+        problem = @"Required Riivolution XML or patch root files are missing. Import those assets into DolphiniOS first.";
+        break;
+      }
+    }
+  }
+
+  if (problem == nil) {
+    descriptor->base_file = game.gameFile->GetFilePath();
+    NSString* directory = [self profileDirectory:game];
+    NSError* error = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:directory
+        withIntermediateDirectories:YES attributes:nil error:&error];
+    if (error != nil) {
+      problem = @"Could not create the profile folder.";
+    } else {
+      NSString* baseName = [[url lastPathComponent] stringByDeletingPathExtension];
+      NSString* destination = [directory stringByAppendingPathComponent:
+          [baseName stringByAppendingPathExtension:@"json"]];
+      int suffix = 2;
+      while ([[NSFileManager defaultManager] fileExistsAtPath:destination]) {
+        destination = [directory stringByAppendingPathComponent:
+            [[NSString stringWithFormat:@"%@ (%d)", baseName, suffix++]
+                stringByAppendingPathExtension:@"json"]];
+      }
+      if (!DiscIO::WriteGameModDescriptorFile(FoundationToCppString(destination),
+                                               *descriptor, true)) {
+        problem = @"Failed to save the imported launch profile.";
+      }
+    }
+  }
+  [url stopAccessingSecurityScopedResource];
+
+  if (problem) {
+    [self presentProfileError:problem];
+  } else {
+    [self presentProfileError:@"Profile imported. Use Launch Profiles to play it or set it as your default. Keep its XML and patch assets in Dolphin's accessible storage."];
+  }
+}
+
+- (void)showDefaultProfilePickerForGame:(GameFilePtrWrapper*)game {
+  NSArray<NSString*>* profiles = [self profilesForGame:game];
+  UIAlertController* picker = [UIAlertController alertControllerWithTitle:@"Default Launch"
+      message:@"Your library cover will launch the chosen profile."
+      preferredStyle:UIAlertControllerStyleActionSheet];
+  NSString* key = [self profileDefaultKey:game];
+  [picker addAction:[UIAlertAction actionWithTitle:@"Original Game"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+      }]];
+  for (NSString* path in profiles) {
+    [picker addAction:[UIAlertAction actionWithTitle:[self profileLabel:path]
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+          [[NSUserDefaults standardUserDefaults] setObject:path forKey:key];
+        }]];
+  }
+  [picker addAction:[UIAlertAction actionWithTitle:@"Cancel"
+      style:UIAlertActionStyleCancel handler:nil]];
+  picker.popoverPresentationController.sourceView = self.collectionView;
+  picker.popoverPresentationController.sourceRect =
+      CGRectMake(CGRectGetMidX(self.collectionView.bounds), 0, 1, 1);
+  [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)showProfileRemovalForGame:(GameFilePtrWrapper*)game {
+  NSArray<NSString*>* profiles = [self profilesForGame:game];
+  UIAlertController* picker = [UIAlertController alertControllerWithTitle:@"Remove Profile"
+      message:@"This only removes the imported JSON from Dolphin's managed profiles, not the game, XML, or patch assets."
+      preferredStyle:UIAlertControllerStyleActionSheet];
+  for (NSString* path in profiles) {
+    [picker addAction:[UIAlertAction actionWithTitle:[self profileLabel:path]
+        style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction* action) {
+          NSError* error = nil;
+          [[NSFileManager defaultManager] removeItemAtPath:path error:&error];
+          if (error != nil) {
+            [self presentProfileError:@"Could not delete that profile."];
+          } else {
+            NSString* key = [self profileDefaultKey:game];
+            if ([[[NSUserDefaults standardUserDefaults] stringForKey:key] isEqualToString:path])
+              [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+          }
+        }]];
+  }
+  [picker addAction:[UIAlertAction actionWithTitle:@"Cancel"
+      style:UIAlertActionStyleCancel handler:nil]];
+  picker.popoverPresentationController.sourceView = self.collectionView;
+  picker.popoverPresentationController.sourceRect =
+      CGRectMake(CGRectGetMidX(self.collectionView.bounds), 0, 1, 1);
+  [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)showLaunchProfilesForGame:(GameFilePtrWrapper*)game {
+  NSArray<NSString*>* profiles = [self profilesForGame:game];
+  UIAlertController* picker = [UIAlertController alertControllerWithTitle:@"Launch Profiles"
+      message:@"Choose a profile to play once, or change the default launch."
+      preferredStyle:UIAlertControllerStyleActionSheet];
+
+  [picker addAction:[UIAlertAction actionWithTitle:@"Play Original Game"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [self loadGameFile:game withLaunchProfile:nil];
+      }]];
+  for (NSString* path in profiles) {
+    [picker addAction:[UIAlertAction actionWithTitle:
+        [@"Play: " stringByAppendingString:[self profileLabel:path]]
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+          [self loadGameFile:game withLaunchProfile:path];
+        }]];
+  }
+  [picker addAction:[UIAlertAction actionWithTitle:@"Set Default Launch…"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [self showDefaultProfilePickerForGame:game];
+      }]];
+  if (profiles.count) {
+    [picker addAction:[UIAlertAction actionWithTitle:@"Remove Imported Profile…"
+        style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction* action) {
+          [self showProfileRemovalForGame:game];
+        }]];
+  }
+  [picker addAction:[UIAlertAction actionWithTitle:@"Import Patch Profile…"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [self importPatchProfileForGame:game];
+      }]];
+  [picker addAction:[UIAlertAction actionWithTitle:@"Cancel"
+      style:UIAlertActionStyleCancel handler:nil]];
+  picker.popoverPresentationController.sourceView = self.collectionView;
+  picker.popoverPresentationController.sourceRect =
+      CGRectMake(CGRectGetMidX(self.collectionView.bounds), 0, 1, 1);
+  [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)receiveImportFileFinishedNotification {
