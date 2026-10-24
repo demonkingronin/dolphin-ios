@@ -887,7 +887,11 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
       message:@"Your library cover will launch the chosen profile."
       preferredStyle:UIAlertControllerStyleActionSheet];
   NSString* key = [self profileDefaultKey:game];
-  [picker addAction:[UIAlertAction actionWithTitle:@"Original Game"
+  [picker addAction:[UIAlertAction actionWithTitle:@"Original Game (No Patches)"
+      style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
+        [[NSUserDefaults standardUserDefaults] setObject:@"__dolphinios_original__" forKey:key];
+      }]];
+  [picker addAction:[UIAlertAction actionWithTitle:@"Automatic (Use Single Available Patch)"
       style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
       }]];
