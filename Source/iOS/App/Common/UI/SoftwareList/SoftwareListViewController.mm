@@ -81,6 +81,42 @@
       CppToFoundationString(gameFileWrapper.gameFile->GetGameID()),
       (unsigned)gameFileWrapper.gameFile->GetRevision()];
   NSString* defaultProfile = [[NSUserDefaults standardUserDefaults] stringForKey:key];
+  // Selecting "Original Game" is a persistent opt-out of automatic patch
+  // selection. Otherwise a single existing, working mod descriptor beside
+  // its original disc acts as that disc's default launch profile.
+  if ([defaultProfile isEqualToString:@"__dolphinios_original__"]) {
+    defaultProfile = nil;
+  } else if (defaultProfile == nil &&
+             gameFileWrapper.gameFile->GetBlobType() != DiscIO::BlobType::MOD_DESCRIPTOR) {
+    NSString* discoveredProfile = nil;
+    NSUInteger discoveredCount = 0;
+    for (GameFilePtrWrapper* candidate in [[GameFileCacheManager sharedManager] getGames]) {
+      if (candidate.gameFile->GetBlobType() != DiscIO::BlobType::MOD_DESCRIPTOR)
+        continue;
+      auto descriptor =
+          DiscIO::ParseGameModDescriptorFile(candidate.gameFile->GetFilePath());
+      if (!descriptor ||
+          descriptor->base_file != gameFileWrapper.gameFile->GetFilePath() ||
+          !descriptor->riivolution || descriptor->riivolution->patches.empty())
+        continue;
+
+      BOOL isReady = YES;
+      for (const auto& patch : descriptor->riivolution->patches) {
+        if (!File::Exists(patch.xml) || !File::Exists(patch.root)) {
+          isReady = NO;
+          break;
+        }
+      }
+      if (isReady) {
+        discoveredProfile = CppToFoundationString(candidate.gameFile->GetFilePath());
+        ++discoveredCount;
+      }
+    }
+    // When more than one patched variant exists, let the user choose a
+    // default instead of silently picking one.
+    if (discoveredCount == 1)
+      defaultProfile = discoveredProfile;
+  }
   [self loadGameFile:gameFileWrapper withLaunchProfile:defaultProfile];
 }
 
