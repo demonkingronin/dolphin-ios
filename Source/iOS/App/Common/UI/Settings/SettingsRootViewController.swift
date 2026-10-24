@@ -15,7 +15,7 @@ class SettingsRootViewController : UITableViewController, UINavigationController
     coreVersionLabel.text = versionManager.coreVersion
     navigationController?.delegate = self
     if let navigationController = navigationController {
-      navigationController(navigationController, willShow: self, animated: false)
+      self.navigationController(navigationController, willShow: self, animated: false)
     }
   }
 
