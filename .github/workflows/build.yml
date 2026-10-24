@@ -65,7 +65,7 @@ jobs:
           import os
           import re
           bundle_id = os.environ.get("TARGET_BUNDLE_ID", "")
-          if not re.fullmatch(r"[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+", bundle_id):
+          if not re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", bundle_id):
               raise SystemExit("Use the exact CFBundleIdentifier from the existing installation.")
           print(f"Replacement bundle ID: {bundle_id}")
           PY
