@@ -65,6 +65,8 @@
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.title = @"Game Settings";
+  self.tableView.rowHeight = UITableViewAutomaticDimension;
+  self.tableView.estimatedRowHeight = 112;
   self.navigationItem.rightBarButtonItem =
       [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                    target:self
@@ -235,7 +237,7 @@
 
 - (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
   if (section == 0)
-    return @"Only the selected game's configuration is changed. Other games keep global settings.";
+    return @"Use Global follows the main Dolphin setting. Other choices override it for this game only.";
   if (section == (NSInteger)_sections.count)
     return @"Clears only the overrides shown above. Existing cheat codes and other GameINI data are preserved.";
   if (section == (NSInteger)_sections.count - 1 && _sections.count > 6)
@@ -299,6 +301,60 @@
       [NSString stringWithFormat:@"Use Global (%@)", globalChoice] : @"Use Global";
 }
 
+// Each configuration option explains the effect of overriding the global value.
+// This is display-only: Dolphin's actual GameINI setting keys remain unchanged.
+- (NSString*)descriptionForSetting:(NSDictionary*)setting {
+  static NSDictionary<NSString*, NSString*>* descriptions;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    descriptions = @{
+      @"AspectRatio": @"Changes the screen proportions. Auto follows the game, 16:9 or 4:3 forces an aspect ratio, and Stretch can distort the image. It does not add new widescreen scenery.",
+      @"InternalResolution": @"Controls 3D rendering resolution. Higher values sharpen the picture but use more GPU power and may lower FPS. Native 1x is closest to the original console.",
+      @"wideScreenHack": @"Attempts to expand a game's 3D view for widescreen. On may reveal more scenery but can cause pop-in, broken effects, or stretched menus.",
+      @"VSync": @"Synchronizes displayed frames with the screen to reduce tearing. On can add input delay or stutter; Off may respond faster but can show torn frames.",
+      @"HiresTextures": @"Loads custom replacement textures from Load/Textures for this game's ID. On requires an existing texture pack; Off ignores it. More detailed textures can use extra memory.",
+      @"CacheHiresTextures": @"Keeps replacement textures in memory. On may reduce loading stutter but uses more RAM; Off loads textures as needed.",
+      @"ShowFPS": @"Displays an FPS counter while playing. On shows performance; Off hides it without meaningfully changing gameplay speed.",
+      @"MaxAnisotropy": @"Improves sharpness of floor, road, and other angled textures. Higher filtering levels may increase GPU workload.",
+      @"EnablePixelLighting": @"Calculates some lighting effects per pixel for more accurate visuals. On may improve lighting but use more GPU resources.",
+      @"EnableGPUTextureDecoding": @"Lets the GPU decode supported game textures instead of the CPU. On may run faster on some hardware; Off may work better for compatibility.",
+      @"ForceTrueColor": @"Uses greater color precision to reduce banding. On may clean up gradients but alter the original look or performance.",
+      @"DisableFog": @"Removes game fog when set to On. This can improve visibility but expose glitches and change the game's intended atmosphere.",
+      @"EFBToTextureEnable": @"Controls embedded-framebuffer copies. On uses faster texture copies; Off uses RAM copies for effects needing more accurate readback, potentially at a speed cost.",
+      @"XFBToTextureEnable": @"Controls external-framebuffer copies. On favors faster texture copies; Off can improve compatibility with games needing RAM copies.",
+      @"EFBScaledCopy": @"Scales copied framebuffer effects to the internal resolution. On can sharpen reflections and effects; Off preserves original-size copies and may prevent glitches.",
+      @"ShaderCompilationMode": @"Controls shader preparation. Specialized can stutter during compilation; ubershaders demand more GPU power but reduce some stutter; Skip Drawing may hide effects temporarily.",
+      @"CPUThread": @"Runs CPU and graphics processing on different threads. On often improves performance; Off may avoid timing bugs but can be slower.",
+      @"EnableCheats": @"Allows enabled Action Replay and Gecko codes to take effect in this game. On does nothing unless cheats are configured; Off disables them.",
+      @"MMU": @"Emulates the console's memory management more accurately. On can fix compatibility but can be significantly slower.",
+      @"OverclockEnable": @"Allows a custom emulated console CPU speed. On applies the multiplier below; Off keeps the normal clock.",
+      @"Overclock": @"Changes the emulated console CPU clock, not the iPhone clock. Above 100% may help CPU-limited games; other values can change timing or stability. Requires Custom CPU Clock.",
+      @"EmulationSpeed": @"Sets target gameplay speed. 100% is normal, lower values are slow motion, and Unlimited removes the speed cap if your device can keep up.",
+      @"DSPHLE": @"Selects audio emulation method. On uses faster high-level emulation (HLE); Off uses potentially more accurate but slower low-level emulation (LLE).",
+      @"DSPThread": @"Processes console audio on a separate thread. On can improve speed but may introduce audio synchronization problems.",
+      @"AudioLatency": @"Changes sound buffering. Lower values reduce audio delay but risk crackling; higher values smooth sound but increase delay.",
+      @"DisableCopyFilter": @"Removes some original console image filters from framebuffer copies. On may look sharper; Off preserves the original effects.",
+      @"ArbitraryMipmapDetection": @"Changes detection of unusual texture mipmap levels. On may fix some texture artifacts; Off can affect texture sharpness or performance.",
+      @"EFBAccessEnable": @"Allows the game to access embedded-framebuffer contents. On supports screen-reading effects; Off may be faster but can break them.",
+      @"SkipDuplicateXFBs": @"Skips repeated copies of identical output frames. On can help performance or pacing; Off may work better with unusual video effects.",
+      @"FastDepthCalc": @"Uses faster, simplified depth calculations. On can improve performance; Off favors accuracy and can fix layering or shadow glitches.",
+      @"VISkip": @"Adjusts video-interface updates when the emulator falls behind. On may keep gameplay running but change frame pacing; Off preserves normal presentation.",
+      @"Widescreen": @"Sets the Wii system's 16:9 preference for supported games. On requests widescreen; Off requests 4:3. Games without support still need a patch.",
+      @"ProgressiveScan": @"Requests progressive video output for games that support it. On can improve picture clarity, but some titles ignore the request.",
+      @"PAL60": @"Requests 60 Hz output in PAL Wii games that support it. On can improve motion smoothness; Off uses the default PAL video mode.",
+    };
+  });
+  NSString* key = setting[@"key"];
+  NSString* description = descriptions[key];
+  if (description.length)
+    return description;
+  if ([key hasPrefix:@"PadProfile"])
+    return @"Select a saved GameCube controller mapping for this port and this game only. Use Global keeps the regular controller mapping.";
+  if ([key hasPrefix:@"WiimoteProfile"])
+    return @"Select a saved Wii Remote controller mapping for this player and this game only. Use Global keeps the regular controller mapping.";
+  return @"Use Global follows Dolphin's main setting. Selecting a different value changes it only for this game.";
+}
+
 - (NSString*)valueForSetting:(NSDictionary*)setting {
   std::string value;
   const auto* group = _ini.GetSection(FoundationToCppString(setting[@"section"]));
@@ -312,22 +368,66 @@
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
          cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"GameSetting"];
-  if (cell == nil)
-    cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
-                                reuseIdentifier:@"GameSetting"];
   if (indexPath.section == (NSInteger)_sections.count) {
-    cell.textLabel.text = @"Reset These Overrides";
-    cell.textLabel.textColor = [UIColor systemRedColor];
-    cell.detailTextLabel.text = nil;
-    cell.accessoryType = UITableViewCellAccessoryNone;
-  } else {
-    NSDictionary* setting = _sections[indexPath.section][indexPath.row];
-    cell.textLabel.text = setting[@"title"];
-    cell.textLabel.textColor = [UIColor labelColor];
-    cell.detailTextLabel.text = [self valueForSetting:setting];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    UITableViewCell* resetCell = [tableView dequeueReusableCellWithIdentifier:@"ResetGameOverrides"];
+    if (resetCell == nil)
+      resetCell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                         reuseIdentifier:@"ResetGameOverrides"];
+    resetCell.textLabel.text = @"Reset These Overrides";
+    resetCell.textLabel.textColor = [UIColor systemRedColor];
+    resetCell.accessoryType = UITableViewCellAccessoryNone;
+    return resetCell;
   }
+
+  // Three labels let every setting show a title, its inherited or overridden
+  // value, and a readable explanation even on narrow phones or large text.
+  static const NSInteger nameTag = 7301;
+  static const NSInteger valueTag = 7302;
+  static const NSInteger descriptionTag = 7303;
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"ExplainedGameSetting"];
+  if (cell == nil) {
+    cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                 reuseIdentifier:@"ExplainedGameSetting"];
+    UILabel* name = [[UILabel alloc] init];
+    name.tag = nameTag;
+    name.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    name.adjustsFontForContentSizeCategory = YES;
+    name.textColor = [UIColor labelColor];
+    name.numberOfLines = 0;
+
+    UILabel* value = [[UILabel alloc] init];
+    value.tag = valueTag;
+    value.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    value.adjustsFontForContentSizeCategory = YES;
+    value.textColor = [UIColor systemBlueColor];
+    value.numberOfLines = 0;
+
+    UILabel* detail = [[UILabel alloc] init];
+    detail.tag = descriptionTag;
+    detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    detail.adjustsFontForContentSizeCategory = YES;
+    detail.textColor = [UIColor secondaryLabelColor];
+    detail.numberOfLines = 0;
+
+    UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[name, value, detail]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentFill;
+    stack.spacing = 3;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+      [stack.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+      [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-10],
+      [stack.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:12],
+      [stack.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-12]
+    ]];
+  }
+  NSDictionary* setting = _sections[indexPath.section][indexPath.row];
+  ((UILabel*)[cell.contentView viewWithTag:nameTag]).text = setting[@"title"];
+  ((UILabel*)[cell.contentView viewWithTag:valueTag]).text = [self valueForSetting:setting];
+  ((UILabel*)[cell.contentView viewWithTag:descriptionTag]).text =
+      [self descriptionForSetting:setting];
+  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   return cell;
 }
 
@@ -370,7 +470,10 @@
   NSDictionary* setting = _sections[indexPath.section][indexPath.row];
   UIAlertController* choices = [UIAlertController
       alertControllerWithTitle:setting[@"title"]
-                      message:@"Choose an override for this game only."
+                      message:[NSString stringWithFormat:
+                          @"%@\n\nCurrent: %@\n\nUse Global follows Dolphin's main setting. Other choices override it for this game only.",
+                          [self descriptionForSetting:setting],
+                          [self valueForSetting:setting]]
                preferredStyle:UIAlertControllerStyleActionSheet];
   [choices addAction:[UIAlertAction actionWithTitle:[self useGlobalLabelForSetting:setting]
       style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
