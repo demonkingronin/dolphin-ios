@@ -129,14 +129,12 @@
         continue;
       [profileNames sortUsingSelector:@selector(localizedStandardCompare:)];
       NSString* displayType = [type isEqualToString:@"GCPad"] ? @"GameCube" : @"Wii Remote";
+      // Dolphin GameConfigLoader uses 1-based profile slot names.
       NSString* key = [NSString stringWithFormat:@"%@Profile%d",
           [type isEqualToString:@"GCPad"] ? @"Pad" : @"Wiimote", controllerPort + 1];
-      // Dolphin uses controller index 0-3 for these keys, not 1-4.
-      key = [NSString stringWithFormat:@"%@Profile%d",
-          [type isEqualToString:@"GCPad"] ? @"Pad" : @"Wiimote", controllerPort];
       [controllerSettings addObject:@{
         @"title": [NSString stringWithFormat:@"%@ Port %d", displayType, controllerPort + 1],
-        @"section": [type isEqualToString:@"GCPad"] ? @"GCPad.Controls" : @"WiiPad.Controls",
+        @"section": [type isEqualToString:@"GCPad"] ? @"GCPad.Controls" : @"Wiimote.Controls",
         @"key": key, @"choices": profileNames, @"values": profileNames
       }];
     }
