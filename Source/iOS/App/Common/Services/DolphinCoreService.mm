@@ -12,6 +12,7 @@
 #import "Core/HW/Wiimote.h"
 #import "Core/System.h"
 
+#import "Common/Config/Config.h"
 #import "Common/FileUtil.h"
 #import "Common/MsgHandler.h"
 
@@ -46,7 +47,16 @@
 #endif
   
   UICommon::Init();
-  
+
+  // Old desktop Dolphin.ini files can store a Windows [General] LoadPath.
+  // After loading settings, clear only that invalid override. The iOS path
+  // guard in UICommon::CreateLoadPath has already directed texture and
+  // Riivolution lookups to this guest's Documents/Load directory.
+  // Do not touch cheats, per-game INIs, saves, or controller profiles.
+  const std::string load_path = Config::Get(Config::MAIN_LOAD_PATH);
+  if (!load_path.empty() && load_path.front() != '/')
+    Config::SetBase(Config::MAIN_LOAD_PATH, std::string{});
+
   [[MsgAlertManager shared] registerHandler];
   
   Common::RegisterStringTranslator([](const char* text) {
