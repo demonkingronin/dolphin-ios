@@ -208,7 +208,7 @@
   std::string value;
   const auto* group = _ini.GetSection(FoundationToCppString(setting[@"section"]));
   if (group == nullptr || !group->Get(FoundationToCppString(setting[@"key"]), &value))
-    return @"Inherit Global";
+    return @"Inherit";
   NSUInteger index = [setting[@"values"] indexOfObject:CppToFoundationString(value)];
   if (index != NSNotFound && index < [setting[@"choices"] count])
     return setting[@"choices"][index];
@@ -628,6 +628,20 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
         [paths addObject:path];
     }
   }
+  // Recognize existing descriptor JSONs already imported as games. These are
+  // hidden from the library when their base disc exists, but remain launchable
+  // here without copying or deleting any of the user's original files.
+  for (GameFilePtrWrapper* candidate in [[GameFileCacheManager sharedManager] getGames]) {
+    if (candidate.gameFile->GetBlobType() != DiscIO::BlobType::MOD_DESCRIPTOR)
+      continue;
+    auto descriptor =
+        DiscIO::ParseGameModDescriptorFile(candidate.gameFile->GetFilePath());
+    if (descriptor && descriptor->base_file == game.gameFile->GetFilePath()) {
+      NSString* path = CppToFoundationString(candidate.gameFile->GetFilePath());
+      if (![paths containsObject:path])
+        [paths addObject:path];
+    }
+  }
   [paths sortUsingSelector:@selector(localizedStandardCompare:)];
   return paths;
 }
@@ -665,7 +679,9 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
 - (void)finishImportPatchProfile:(NSURL*)url {
   GameFilePtrWrapper* game = _profileImportGame;
   _profileImportGame = nil;
-  if (game == nil || ![url startAccessingSecurityScopedResource]) {
+  BOOL scopedAccess = [url startAccessingSecurityScopedResource];
+  if (game == nil || ![[NSFileManager defaultManager] isReadableFileAtPath:url.path]) {
+    if (scopedAccess) [url stopAccessingSecurityScopedResource];
     [self presentProfileError:@"The selected JSON could not be opened."];
     return;
   }
@@ -723,7 +739,7 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
       }
     }
   }
-  [url stopAccessingSecurityScopedResource];
+  if (scopedAccess) [url stopAccessingSecurityScopedResource];
 
   if (problem) {
     [self presentProfileError:problem];
@@ -757,7 +773,15 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
 }
 
 - (void)showProfileRemovalForGame:(GameFilePtrWrapper*)game {
-  NSArray<NSString*>* profiles = [self profilesForGame:game];
+  // Never delete a pre-existing JSON from the user's Games directory.
+  NSString* managedDirectory = [[self profileDirectory:game] stringByStandardizingPath];
+  NSMutableArray<NSString*>* managedProfiles = [NSMutableArray array];
+  for (NSString* path in [self profilesForGame:game]) {
+    if ([[[path stringByDeletingLastPathComponent] stringByStandardizingPath]
+             isEqualToString:managedDirectory])
+      [managedProfiles addObject:path];
+  }
+  NSArray<NSString*>* profiles = managedProfiles;
   UIAlertController* picker = [UIAlertController alertControllerWithTitle:@"Remove Profile"
       message:@"This only removes the imported JSON from Dolphin's managed profiles, not the game, XML, or patch assets."
       preferredStyle:UIAlertControllerStyleActionSheet];
@@ -804,7 +828,15 @@ typedef NS_ENUM(NSInteger, DOLSoftwareListDocumentPickerType) {
       style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction* action) {
         [self showDefaultProfilePickerForGame:game];
       }]];
-  if (profiles.count) {
+  BOOL hasManagedProfile = NO;
+  for (NSString* path in profiles) {
+    if ([[[path stringByDeletingLastPathComponent] stringByStandardizingPath]
+        isEqualToString:[[self profileDirectory:game] stringByStandardizingPath]]) {
+      hasManagedProfile = YES;
+      break;
+    }
+  }
+  if (hasManagedProfile) {
     [picker addAction:[UIAlertAction actionWithTitle:@"Remove Imported Profile…"
         style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction* action) {
           [self showProfileRemovalForGame:game];
