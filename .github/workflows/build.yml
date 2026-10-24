@@ -1,12 +1,12 @@
-name: Build DolphiniOS (iPhone)
+name: Build iOS IPA
 
+# Build only when explicitly requested. Avoids repeated expensive rebuilds
+# while preparing a combined test with the user's existing LiveContainer data.
 on:
-  push:
-    branches:
-      - 'feature/**'
-  pull_request:
-    branches: [ master ]
-  workflow_dispatch: {}
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -14,14 +14,21 @@ jobs:
     timeout-minutes: 240
 
     env:
-      XCODE_COMMON_BUILD_ARGS: -project Source/iOS/App/DolphiniOS.xcodeproj -derivedDataPath "${{ github.workspace }}/build-Xcode" -sdk iphoneos -destination generic/platform=iOS DOL_PBID_ORGANIZATION_IDENTIFIER="me.oatmealdome" DOL_BUILD_SOURCE="development" CODE_SIGNING_ALLOWED="NO" CODE_SIGNING_REQUIRED="NO"
+      XCODE_PROJECT: Source/iOS/App/DolphiniOS.xcodeproj
+      XCODE_DERIVED_DATA: ${{ github.workspace }}/build-Xcode
+      ARCHIVE_PATH: ${{ github.workspace }}/archives/NonJailbroken.xcarchive
+      # Preserve the original non-jailbroken DolphiniOS app identifier.
+      # Verify this matches the app in LiveContainer BEFORE replacement.
+      DOL_PBID_ORGANIZATION_IDENTIFIER: me.oatmealdome
+      DOL_BUILD_SOURCE: development
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Select available Xcode
+      - name: Select Xcode
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
           if [ -n "$LATEST_XCODE" ]; then
@@ -29,32 +36,38 @@ jobs:
           fi
           xcodebuild -version
 
-      - name: Install build utilities
+      - name: Install build dependencies
         run: |
-          brew install cmake ninja bartycrouch dpkg
+          brew install cmake ninja bartycrouch
 
-      - name: Build Non-Jailbroken app
+      - name: Build non-jailbroken app
         run: |
-          mkdir -p "${{ github.workspace }}/archives"
+          mkdir -p archives products
           xcodebuild archive \
-            -archivePath "${{ github.workspace }}/archives/NonJailbroken.xcarchive" \
+            -project "$XCODE_PROJECT" \
+            -derivedDataPath "$XCODE_DERIVED_DATA" \
+            -archivePath "$ARCHIVE_PATH" \
             -configuration "Release (Non-Jailbroken)" \
             -scheme "DiOS (NJB)" \
-            ${{ env.XCODE_COMMON_BUILD_ARGS }}
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            DOL_PBID_ORGANIZATION_IDENTIFIER="$DOL_PBID_ORGANIZATION_IDENTIFIER" \
+            DOL_BUILD_SOURCE="$DOL_BUILD_SOURCE" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
-      - name: Package IPA for LiveContainer
+      - name: Package IPA
         run: |
-          mkdir -p "${{ github.workspace }}/products"
-          "${{ github.workspace }}/Source/iOS/App/Project/Scripts/CreateIpa.sh" \
-            "${{ github.workspace }}/archives/NonJailbroken.xcarchive/Products/Applications/DolphiniOS.app" \
+          "$GITHUB_WORKSPACE/Source/iOS/App/Project/Scripts/CreateIpa.sh" \
+            "$ARCHIVE_PATH/Products/Applications/DolphiniOS.app" \
             "-" \
-            "${{ github.workspace }}/Source/iOS/App/Project/Entitlements/Public.entitlements" \
-            "${{ github.workspace }}/products/Non-Jailbroken.ipa"
+            "$GITHUB_WORKSPACE/Source/iOS/App/Project/Entitlements/Public.entitlements" \
+            "$GITHUB_WORKSPACE/products/Non-Jailbroken.ipa"
 
-      - name: Upload IPA artifact
+      - name: Upload IPA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: DolphiniOS-LiveContainer-${{ github.sha }}
-          path: "${{ github.workspace }}/products/*.ipa"
+          name: DolphiniOS-Combined-${{ github.sha }}
+          path: products/*.ipa
           if-no-files-found: warn
+          retention-days: 7
